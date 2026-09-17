@@ -184,6 +184,9 @@ class TrainingManager:
                 model_path = model.local_path if model else None
                 dataset_path = dataset.local_path if dataset else None
                 job_snapshot = job.id
+                # Flush before detaching: expunge() drops pending changes, which
+                # would otherwise lose the RUNNING status and started_at stamp.
+                session.flush()
                 session.expunge(job)
 
             backend = self._build_backend(backend_name, model_path, dataset_path)

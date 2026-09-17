@@ -37,9 +37,14 @@ class _HttpAdapter(InferenceAdapter):
 
     @classmethod
     def _probe(cls, url: str) -> bool:
+        """An engine counts as available only on a successful response.
+
+        A 404 means something else is listening on that port (Foxtrot itself,
+        for instance) — that must not be reported as a live engine.
+        """
         try:
             with httpx.Client(timeout=2.0) as client:
-                return client.get(url).status_code < 500
+                return client.get(url).status_code < 400
         except Exception:
             return False
 
@@ -128,16 +133,16 @@ class LlamaCppAdapter(_HttpAdapter):
 
     engine = "llamacpp"
     provenance = "measured"
-    base_url = "http://localhost:8080"
+    base_url = settings.llamacpp_base_url
 
     @classmethod
     def is_available(cls) -> bool:
-        return cls._probe("http://localhost:8080/health")
+        return cls._probe(f"{settings.llamacpp_base_url}/health")
 
     async def load(self) -> None:
         if not self.is_available():
             raise EngineUnavailableError(
-                "No llama.cpp server found at http://localhost:8080. Start one with: "
+                f"No llama.cpp server found at {settings.llamacpp_base_url}. Start one with: "
                 "`llama-server -m model.gguf --port 8080`"
             )
         self._loaded = True
@@ -162,7 +167,7 @@ class LlamaCppAdapter(_HttpAdapter):
             provenance="measured",
             loaded_model=self._model_name(),
             device="llama.cpp",
-            detail=None if ok else "llama.cpp server not running on :8080",
+            detail=None if ok else f"no llama.cpp server at {settings.llamacpp_base_url}",
         )
 
 
@@ -171,17 +176,17 @@ class VLLMAdapter(_HttpAdapter):
 
     engine = "vllm"
     provenance = "measured"
-    base_url = "http://localhost:8000/v1"
+    base_url = settings.vllm_base_url
 
     @classmethod
     def is_available(cls) -> bool:
-        return cls._probe("http://localhost:8000/v1/models")
+        return cls._probe(f"{settings.vllm_base_url}/models")
 
     async def load(self) -> None:
         if not self.is_available():
             raise EngineUnavailableError(
-                "No vLLM server found. Start one with: "
-                "`python -m vllm.entrypoints.openai.api_server --model <path>`"
+                f"No vLLM server found at {settings.vllm_base_url}. Start one with: "
+                "`python -m vllm.entrypoints.openai.api_server --model <path> --port 8001`"
             )
         self._loaded = True
 
@@ -201,7 +206,7 @@ class VLLMAdapter(_HttpAdapter):
             provenance="measured",
             loaded_model=self._model_name(),
             device="vllm",
-            detail=None if ok else "vLLM OpenAI server not reachable",
+            detail=None if ok else f"no vLLM server at {settings.vllm_base_url}",
         )
 
 

@@ -150,15 +150,22 @@ def test_benchmark_run_produces_graded_items(client):
     assert run["status"] == "queued"
     assert run["config"]["official_split"] is False  # bundled sample, never called official
 
+    # a queued run must flip to a persisted RUNNING state, not stay "queued"
+    observed_running = False
     deadline = time.time() + 60
     detail = {}
     while time.time() < deadline:
         detail = client.get(f"/api/benchmarks/results/{run['id']}").json()
+        if detail["status"] == "running":
+            observed_running = True
+            assert detail["started_at"] is not None
         if detail["status"] in {"completed", "failed"}:
             break
-        time.sleep(0.5)
+        time.sleep(0.25)
 
     assert detail["status"] == "completed", detail.get("error")
+    assert observed_running, "run never reported a persisted 'running' status"
+    assert detail["started_at"] is not None
     assert detail["completed_items"] == 3
     assert len(detail["items"]) == 3
     assert detail["overall_score"] is not None

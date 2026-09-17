@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime, timezone
 
 from fastapi import APIRouter
@@ -78,7 +79,7 @@ def read_settings() -> dict:
         "hardware_sample_interval_s": settings.hardware_sample_interval_s,
         "cors_origins": settings.cors_origin_list,
         "available_engines": [info.engine for info in inference_registry.engine_status()],
-        "engine_status": [info.__dict__ for info in inference_registry.engine_status()],
+        "engine_status": [asdict(info) for info in inference_registry.engine_status()],
         "benchmark_suites": [info.key for info in suite_registry.list_info()],
         "demo_data_present": demo_data_present(),
     }

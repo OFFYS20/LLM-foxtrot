@@ -97,6 +97,11 @@ def test_training_job_lifecycle(client):
     assert job["backend"] == "simulated"
     assert job["total_steps"] == 24
 
+    # the RUNNING status and start stamp must be persisted, not just in memory
+    detail = client.get(f"/api/training/jobs/{job['id']}").json()
+    assert detail["status"] == "running", detail["status"]
+    assert detail["started_at"] is not None
+
     # let a few simulated steps run
     deadline = time.time() + 15
     metrics: list = []

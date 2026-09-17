@@ -124,9 +124,7 @@ class SimulatedTrainingBackend(TrainingBackend):
             )
 
             if step % cfg.log_every_steps == 0 or step == total_steps:
-                vram_gb = (
-                    _vram_estimate(cfg.max_sequence_length, cfg.batch_size, cfg.method) / 1024
-                )
+                vram_gb = _vram_estimate(cfg.max_sequence_length, cfg.batch_size, cfg.method) / 1024
                 await ctx.log(
                     f"[TRAIN] Step {step}/{total_steps}\n"
                     f"  loss: {loss:.3f}\n"

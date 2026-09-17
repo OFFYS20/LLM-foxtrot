@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     inference_engine: InferenceEngine = "demo"
     hardware_provider: HardwareProviderName = "auto"
     ollama_base_url: str = "http://localhost:11434"
+    # vLLM defaults to 8001 so a probe never mistakes Foxtrot's own port for a
+    # running vLLM server.
+    vllm_base_url: str = "http://localhost:8001/v1"
+    llamacpp_base_url: str = "http://localhost:8080"
 
     # --- telemetry ---------------------------------------------------------
     hardware_sample_interval_s: float = Field(default=2.0, ge=0.25, le=60.0)

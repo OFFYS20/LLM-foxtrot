@@ -117,6 +117,8 @@ class BenchmarkRunner:
                 config = dict(run.config)
                 suite = run.suite
                 total_items = run.total_items
+                # Flush before detaching — expunge() would discard these writes.
+                session.flush()
                 session.expunge(run)
                 if model:
                     session.expunge(model)
