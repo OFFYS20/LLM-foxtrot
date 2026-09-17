@@ -1,0 +1,19 @@
+# Optional extras. Install only what your machine supports.
+# Everything here is imported lazily and guarded — the platform runs without it.
+
+# --- real GPU telemetry -----------------------------------------------------
+nvidia-ml-py>=12.535          # pynvml bindings
+
+# --- real inference / training ---------------------------------------------
+torch>=2.3                    # install the CUDA/ROCm build for your platform
+transformers>=4.44
+datasets>=2.20
+accelerate>=0.33
+peft>=0.12
+safetensors>=0.4
+sentencepiece>=0.2
+# bitsandbytes>=0.43          # linux + CUDA only (QLoRA / INT8 / INT4)
+
+# --- extra dataset formats --------------------------------------------------
+pyarrow>=16.0                 # parquet
+pandas>=2.2
