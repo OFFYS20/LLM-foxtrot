@@ -59,6 +59,7 @@ def render() -> None:
                 regenerate_button = gr.Button("Regenerate", size="sm")
                 clear_button = gr.Button("Clear", size="sm")
                 new_button = gr.Button("New conversation", size="sm")
+                delete_button = gr.Button("Delete", size="sm", variant="stop")
             stats_html = gr.HTML()
             retrieved_html = gr.HTML()
 
@@ -83,7 +84,13 @@ def render() -> None:
             rag_top_k = gr.Slider(1, 10, value=4, step=1, label="Chunks retrieved")
             gr.Markdown("**Context**")
             context_strategy = gr.Dropdown(
-                ["trim_oldest", "summarize", "new_context"], value="trim_oldest",
+                [
+                    ("Drop the oldest turns", "trim_oldest"),
+                    ("Summarise earlier turns", "summarize"),
+                    ("Keep the most relevant turns", "retrieve"),
+                    ("Start a fresh context", "new_context"),
+                ],
+                value="trim_oldest",
                 label="When context is full",
             )
             refresh_button = gr.Button("↻ Refresh lists", size="sm")
@@ -117,6 +124,25 @@ def render() -> None:
         return conversation_id, _history(conversation_id), ""
 
     conversation_picker.change(do_pick, conversation_picker, [state_conversation, chatbot, stats_html])
+
+    def do_delete(conversation_id):
+        if not conversation_id:
+            return None, [], gr.update(choices=conversation_choices()), t.note(
+                "No conversation selected.", "warn"), ""
+        try:
+            convo.delete_conversation(conversation_id)
+        except StudioError as exc:
+            return (conversation_id, _history(conversation_id),
+                    gr.update(choices=conversation_choices()), t.error_message(exc), "")
+        return (
+            None, [], gr.update(choices=conversation_choices(), value=None),
+            t.note("Conversation deleted, including its messages."), "",
+        )
+
+    delete_button.click(
+        do_delete, state_conversation,
+        [state_conversation, chatbot, conversation_picker, stats_html, retrieved_html],
+    )
 
     def do_clear(conversation_id):
         if conversation_id:

@@ -13,7 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Hint } from "@/components/ui/tooltip";
-import { useHardware, useModels, useSystemInfo } from "@/lib/hooks/queries";
+import { useHardware, useModels, useProject, useSystemInfo } from "@/lib/hooks/queries";
 import { useRealtimeState, useRealtimeTopic } from "@/lib/hooks/use-realtime";
 import { useWorkspace } from "@/lib/store";
 import { formatPercent } from "@/lib/format";
@@ -63,7 +63,11 @@ export function Topbar() {
   const { data: models } = useModels({ limit: 100 });
   const activeModelId = useWorkspace((state) => state.activeModelId);
   const setActiveModel = useWorkspace((state) => state.setActiveModel);
-  const projectName = useWorkspace((state) => state.activeProjectName);
+  const activeProjectId = useWorkspace((state) => state.activeProjectId);
+  const cachedProjectName = useWorkspace((state) => state.activeProjectName);
+  const { data: project } = useProject(activeProjectId);
+  // The live name wins; the cached one covers the first paint.
+  const projectName = activeProjectId ? (project?.name ?? cachedProjectName) : "No project";
   const connection = useRealtimeState();
 
   const { data: polledHardware } = useHardware(isMockProvider ? 4000 : 15_000);

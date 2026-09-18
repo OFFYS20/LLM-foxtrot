@@ -34,6 +34,10 @@ import type {
   ModelDetail,
   ModelImportRequest,
   Page,
+  Project,
+  ProjectCreateRequest,
+  ProjectDetail,
+  ProjectUpdateRequest,
   PlaygroundRun,
   PlaygroundComparison,
   SamplingParams,
@@ -84,6 +88,14 @@ export interface DataProvider {
     unload(id: string): Promise<ModelDetail>;
     export(id: string, format: string, destination?: string): Promise<Record<string, unknown>>;
     checkpoints(id: string): Promise<Checkpoint[]>;
+  };
+
+  projects: {
+    list(params?: ListParams & { include_demo?: boolean }): Promise<Page<Project>>;
+    get(id: string): Promise<ProjectDetail>;
+    create(payload: ProjectCreateRequest): Promise<ProjectDetail>;
+    update(id: string, payload: ProjectUpdateRequest): Promise<ProjectDetail>;
+    remove(id: string): Promise<Ack>;
   };
 
   datasets: {

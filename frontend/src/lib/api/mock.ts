@@ -24,6 +24,8 @@ import type {
   Model,
   Page,
   PlaygroundComparison,
+  Project,
+  ProjectDetail,
   TrainingConfig,
   TrainingJob,
   TrainingJobDetail,
@@ -119,6 +121,34 @@ const MODELS: Model[] = [
     updated_at: now(),
   },
 ];
+
+const PROJECTS: Project[] = [
+  {
+    id: "prj_demo_workspace",
+    name: "Foxtrot workspace",
+    description: "Mock project (client-side fixtures).",
+    base_model_id: "mdl_demo_base",
+    default_dataset_id: "ds_demo_sft",
+    tags: ["demo"],
+    settings: {},
+    is_demo: true,
+    created_at: now(),
+    updated_at: now(),
+  },
+];
+
+function projectDetail(project: Project): ProjectDetail {
+  return {
+    ...project,
+    base_model_name: "Foxtrot 7B Base",
+    default_dataset_name: "foxtrot-instruct-50k",
+    experiment_count: 0,
+    training_job_count: 0,
+    running_job_count: 0,
+    checkpoint_count: 0,
+    last_activity_at: null,
+  };
+}
 
 const DATASETS: Dataset[] = [
   {
@@ -503,6 +533,39 @@ export const mockProvider: DataProvider = {
     }),
     export: notSupported("Exporting models"),
     checkpoints: async (modelId) => CHECKPOINTS.filter((c) => c.model_id === modelId),
+  },
+
+  projects: {
+    list: async (params) =>
+      page(params?.include_demo === false ? PROJECTS.filter((p) => !p.is_demo) : PROJECTS, params),
+    get: async (projectId) =>
+      projectDetail(PROJECTS.find((p) => p.id === projectId) ?? PROJECTS[0]),
+    create: async (payload) => {
+      const project: Project = {
+        id: id("prj"),
+        name: payload.name,
+        description: payload.description ?? null,
+        base_model_id: payload.base_model_id ?? null,
+        default_dataset_id: payload.default_dataset_id ?? null,
+        tags: payload.tags ?? [],
+        settings: payload.settings ?? {},
+        is_demo: false,
+        created_at: now(),
+        updated_at: now(),
+      };
+      PROJECTS.unshift(project);
+      return projectDetail(project);
+    },
+    update: async (projectId, payload) => {
+      const project = PROJECTS.find((p) => p.id === projectId) ?? PROJECTS[0];
+      Object.assign(project, payload, { updated_at: now() });
+      return projectDetail(project);
+    },
+    remove: async (projectId) => {
+      const index = PROJECTS.findIndex((p) => p.id === projectId);
+      if (index >= 0) PROJECTS.splice(index, 1);
+      return { ok: true, message: "Deleted", id: projectId };
+    },
   },
 
   datasets: {

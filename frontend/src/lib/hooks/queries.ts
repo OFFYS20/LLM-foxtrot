@@ -20,6 +20,8 @@ import type {
   BenchmarkRunConfig,
   DatasetTemplate,
   ModelImportRequest,
+  ProjectCreateRequest,
+  ProjectUpdateRequest,
   SamplingParams,
   TrainingConfig,
   TrainingJobCreate,
@@ -30,6 +32,8 @@ export const queryKeys = {
   settings: ["settings"] as const,
   models: (params?: ListParams) => ["models", params ?? {}] as const,
   model: (id: string) => ["model", id] as const,
+  projects: (params?: ListParams) => ["projects", params ?? {}] as const,
+  project: (id: string) => ["project", id] as const,
   datasets: (params?: ListParams) => ["datasets", params ?? {}] as const,
   dataset: (id: string) => ["dataset", id] as const,
   datasetPreview: (id: string, offset: number) => ["dataset-preview", id, offset] as const,
@@ -128,6 +132,46 @@ export function useModelMutations() {
 }
 
 /* ---------------------------------------------------------------- datasets */
+
+export function useProjects(params?: ListParams) {
+  return useQuery({
+    queryKey: queryKeys.projects(params),
+    queryFn: () => api.projects.list(params),
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function useProject(id: string | null) {
+  return useQuery({
+    queryKey: queryKeys.project(id ?? "none"),
+    queryFn: () => api.projects.get(id as string),
+    enabled: Boolean(id),
+  });
+}
+
+export function useProjectMutations() {
+  const client = useQueryClient();
+  const invalidate = () => {
+    client.invalidateQueries({ queryKey: ["projects"] });
+    client.invalidateQueries({ queryKey: ["project"] });
+  };
+
+  return {
+    create: useMutation({
+      mutationFn: (payload: ProjectCreateRequest) => api.projects.create(payload),
+      onSuccess: invalidate,
+    }),
+    update: useMutation({
+      mutationFn: ({ id, payload }: { id: string; payload: ProjectUpdateRequest }) =>
+        api.projects.update(id, payload),
+      onSuccess: invalidate,
+    }),
+    remove: useMutation({
+      mutationFn: (id: string) => api.projects.remove(id),
+      onSuccess: invalidate,
+    }),
+  };
+}
 
 export function useDatasets(params?: ListParams) {
   return useQuery({

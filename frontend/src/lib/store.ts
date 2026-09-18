@@ -9,6 +9,9 @@ import type { SamplingParams } from "@/lib/types";
 interface WorkspaceState {
   /** The model shown in the top bar and pre-selected across Chat/Training/Benchmarks. */
   activeModelId: string | null;
+  /** The backend project this workspace is scoped to (null = none selected). */
+  activeProjectId: string | null;
+  /** Cached name so the top bar renders before the project query resolves. */
   activeProjectName: string;
   inspectorOpen: boolean;
   sidebarCollapsed: boolean;
@@ -18,7 +21,7 @@ interface WorkspaceState {
   playgroundModelIds: string[];
 
   setActiveModel: (id: string | null) => void;
-  setActiveProject: (name: string) => void;
+  setActiveProject: (id: string | null, name?: string) => void;
   toggleInspector: (open?: boolean) => void;
   toggleSidebar: (collapsed?: boolean) => void;
   setChatParams: (params: Partial<SamplingParams>) => void;
@@ -31,6 +34,7 @@ export const useWorkspace = create<WorkspaceState>()(
   persist(
     (set) => ({
       activeModelId: null,
+      activeProjectId: null,
       activeProjectName: "Foxtrot workspace",
       inspectorOpen: true,
       sidebarCollapsed: false,
@@ -40,7 +44,11 @@ export const useWorkspace = create<WorkspaceState>()(
       playgroundModelIds: [],
 
       setActiveModel: (id) => set({ activeModelId: id }),
-      setActiveProject: (name) => set({ activeProjectName: name }),
+      setActiveProject: (id, name) =>
+        set((state) => ({
+          activeProjectId: id,
+          activeProjectName: name ?? (id ? state.activeProjectName : "Foxtrot workspace"),
+        })),
       toggleInspector: (open) => set((state) => ({ inspectorOpen: open ?? !state.inspectorOpen })),
       toggleSidebar: (collapsed) =>
         set((state) => ({ sidebarCollapsed: collapsed ?? !state.sidebarCollapsed })),
@@ -53,6 +61,7 @@ export const useWorkspace = create<WorkspaceState>()(
       name: "foxtrot-workspace",
       partialize: (state) => ({
         activeModelId: state.activeModelId,
+        activeProjectId: state.activeProjectId,
         activeProjectName: state.activeProjectName,
         inspectorOpen: state.inspectorOpen,
         sidebarCollapsed: state.sidebarCollapsed,

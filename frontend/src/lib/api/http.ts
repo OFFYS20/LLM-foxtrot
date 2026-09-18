@@ -107,6 +107,14 @@ export const httpProvider: DataProvider = {
     checkpoints: (id) => request(`/models/${id}/checkpoints`),
   },
 
+  projects: {
+    list: (params) => request(`/projects${buildQuery(params)}`),
+    get: (id) => request(`/projects/${id}`),
+    create: (payload) => post("/projects", payload),
+    update: (id, payload) => patch(`/projects/${id}`, payload),
+    remove: (id) => del(`/projects/${id}`),
+  },
+
   datasets: {
     list: (params) => request(`/datasets${buildQuery(params)}`),
     get: (id) => request(`/datasets/${id}`),

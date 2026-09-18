@@ -338,9 +338,19 @@ top-k, repetition penalty, max new tokens, seed and the system prompt (several
 presets, or your own).
 
 The context strategy decides what happens when a conversation outgrows the
-model's window: `trim_oldest`, `summarize`, `new_context` or `retrieve`.
-Whatever it does is **reported in the transcript** — history is never discarded
-silently.
+model's window:
+
+| Strategy | What it does |
+|---|---|
+| `trim_oldest` | Drops the oldest turns, always keeping the newest |
+| `summarize` | Summarises earlier turns and keeps the summary in the prompt |
+| `retrieve` | Keeps the earlier turns most relevant to your current question, in conversation order |
+| `new_context` | Starts fresh, keeping only the latest message |
+
+Whatever a strategy does is **reported in the transcript** — how many messages
+were left out, summarised or retrieved. Nothing is deleted from the saved
+conversation, and history is never discarded silently. Conversations can be
+cleared (emptying the messages) or deleted outright from the same screen.
 
 The debug panel shows the exact prompt sent to the model, token counts,
 tokens/second, time to first token, the sampling parameters used and any

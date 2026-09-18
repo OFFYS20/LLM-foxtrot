@@ -184,6 +184,47 @@ export interface DatasetValidationReport {
   truncated: boolean;
 }
 
+export interface Project {
+  id: string;
+  name: string;
+  description?: string | null;
+  base_model_id?: string | null;
+  default_dataset_id?: string | null;
+  tags: string[];
+  settings: Record<string, unknown>;
+  is_demo: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectDetail extends Project {
+  base_model_name?: string | null;
+  default_dataset_name?: string | null;
+  experiment_count: number;
+  training_job_count: number;
+  running_job_count: number;
+  checkpoint_count: number;
+  last_activity_at?: string | null;
+}
+
+export interface ProjectCreateRequest {
+  name: string;
+  description?: string | null;
+  base_model_id?: string | null;
+  default_dataset_id?: string | null;
+  tags?: string[];
+  settings?: Record<string, unknown>;
+}
+
+export interface ProjectUpdateRequest {
+  name?: string;
+  description?: string | null;
+  base_model_id?: string | null;
+  default_dataset_id?: string | null;
+  tags?: string[];
+  settings?: Record<string, unknown>;
+}
+
 export interface Dataset {
   id: string;
   name: string;

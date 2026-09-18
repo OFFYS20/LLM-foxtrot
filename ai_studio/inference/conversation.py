@@ -6,6 +6,7 @@ and *reported* — history is never silently discarded.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -69,6 +70,7 @@ class ContextReport:
     context_limit: int = 0
     messages_dropped: int = 0
     messages_summarized: int = 0
+    messages_retrieved: int = 0
     truncated: bool = False
     note: str | None = None
 
@@ -174,6 +176,7 @@ def clear_conversation(conversation_id: str) -> int:
 
 def delete_conversation(conversation_id: str) -> None:
     db = get_db()
+    db.require("conversations", conversation_id)  # never report a delete that did nothing
     clear_conversation(conversation_id)
     db.delete("conversations", conversation_id)
 
@@ -183,6 +186,24 @@ def list_conversations(limit: int = 100) -> list[dict[str, Any]]:
 
 
 # ------------------------------------------------------------ prompt building
+_WORD = re.compile(r"[a-z0-9]+")
+
+
+def _overlap(query: str, text: str) -> float:
+    """Jaccard overlap on lowercased word sets — cheap, deterministic relevance."""
+    left = set(_WORD.findall(query.lower()))
+    right = set(_WORD.findall(text.lower()))
+    if not left or not right:
+        return 0.0
+    return len(left & right) / len(left | right)
+
+
+def _in_original_order(history: list[Message], subset: list[Message]) -> list[Message]:
+    """Relevance picks the messages; the conversation decides their order."""
+    chosen = {id(message) for message in subset}
+    return [message for message in history if id(message) in chosen]
+
+
 def build_prompt(
     messages: list[Message],
     *,
@@ -238,6 +259,41 @@ def build_prompt(
             f"({report.messages_dropped} earlier messages are still stored in the conversation)."
         )
         return prompt, report
+
+    if strategy == "retrieve" and len(history) > 2:
+        # Keep the turns most relevant to the current question rather than merely
+        # the most recent ones. Everything stays in the saved conversation.
+        question = history[-1]
+        candidates = history[:-1]
+        query = question.content
+        if question.role != "user":
+            query = next(
+                (message.content for message in reversed(candidates) if message.role == "user"),
+                query,
+            )
+
+        kept: list[Message] = []
+        for candidate in sorted(candidates, key=lambda m: _overlap(query, m.content), reverse=True):
+            if _overlap(query, candidate.content) <= 0:
+                break
+            trial = _in_original_order(history, kept + [candidate]) + [question]
+            if count(render(trial)) > budget:
+                continue
+            kept.append(candidate)
+
+        selected = _in_original_order(history, kept) + [question]
+        prompt = render(selected)
+        report.prompt_tokens = count(prompt)
+        if report.prompt_tokens <= budget:
+            report.messages_retrieved = len(kept)
+            report.messages_dropped = len(candidates) - len(kept)
+            report.note = (
+                f"Context limit reached — kept the {len(kept)} earlier message(s) most relevant "
+                f"to your question and left {report.messages_dropped} out of the prompt. "
+                f"Nothing was deleted from the saved conversation."
+            )
+            return prompt, report
+        # The question alone does not fit; trimming handles truncation honestly.
 
     if strategy == "summarize" and summarizer is not None and len(history) > 2:
         head, tail = history[:-4], history[-4:]

@@ -8,6 +8,7 @@ import { PageHeader, SectionTitle } from "@/components/common/page-header";
 import { MetricRow } from "@/components/common/stat-tile";
 import { ErrorState, LoadingState, WarningNote } from "@/components/common/states";
 import { Workspace } from "@/components/layout/app-shell";
+import { ProjectsCard } from "@/components/settings/projects-card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -22,9 +23,6 @@ export default function SettingsPage() {
   const { data: system, isLoading, error, refetch } = useSystemInfo();
   const { data: settings } = useSettings();
   const connection = useRealtimeState();
-
-  const projectName = useWorkspace((state) => state.activeProjectName);
-  const setProjectName = useWorkspace((state) => state.setActiveProject);
 
   const [busy, setBusy] = React.useState<string | null>(null);
   const [message, setMessage] = React.useState<string | null>(null);
@@ -141,21 +139,8 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
-      <SectionTitle>Workspace</SectionTitle>
-      <Card>
-        <CardContent className="space-y-3 py-3">
-          <div className="max-w-sm space-y-1.5">
-            <Label htmlFor="project">Project name</Label>
-            <Input
-              id="project"
-              value={projectName}
-              onChange={(event) => setProjectName(event.target.value)}
-              className="h-8 text-xs"
-            />
-            <p className="text-2xs text-ink-muted">Shown in the top bar. Stored in this browser.</p>
-          </div>
-        </CardContent>
-      </Card>
+      <SectionTitle>Projects</SectionTitle>
+      <ProjectsCard />
 
       <SectionTitle>Demo data</SectionTitle>
       <Card>
