@@ -15,6 +15,7 @@ from app.api.routes import (
     logs,
     models,
     playground,
+    projects,
     realtime,
     system,
     training,
@@ -22,6 +23,7 @@ from app.api.routes import (
 
 api_router = APIRouter()
 api_router.include_router(system.router)
+api_router.include_router(projects.router)
 api_router.include_router(models.router)
 api_router.include_router(datasets.router)
 api_router.include_router(training.router)
