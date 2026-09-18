@@ -101,7 +101,7 @@ export function Topbar() {
           {projectName}
         </span>
         <span className="hidden h-4 w-px bg-border md:inline" />
-        <Select value={activeModelId ?? undefined} onValueChange={setActiveModel}>
+        <Select value={activeModelId ?? ""} onValueChange={setActiveModel}>
           <SelectTrigger className="h-7 w-[220px] border-border-strong bg-elevated text-xs">
             <SelectValue placeholder="No model selected" />
           </SelectTrigger>

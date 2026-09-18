@@ -168,7 +168,12 @@ export function useProjectMutations() {
     }),
     remove: useMutation({
       mutationFn: (id: string) => api.projects.remove(id),
-      onSuccess: invalidate,
+      // Drop the deleted project's query instead of invalidating it — an
+      // invalidation would refetch an id that no longer exists and 404.
+      onSuccess: (_result, id) => {
+        client.removeQueries({ queryKey: queryKeys.project(id) });
+        client.invalidateQueries({ queryKey: ["projects"] });
+      },
     }),
   };
 }

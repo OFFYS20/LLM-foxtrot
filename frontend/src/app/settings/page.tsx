@@ -12,12 +12,9 @@ import { ProjectsCard } from "@/components/settings/projects-card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { api, API_BASE_URL, isMockProvider } from "@/lib/api";
 import { useSettings, useSystemInfo } from "@/lib/hooks/queries";
 import { useRealtimeState } from "@/lib/hooks/use-realtime";
-import { useWorkspace } from "@/lib/store";
 
 export default function SettingsPage() {
   const { data: system, isLoading, error, refetch } = useSystemInfo();
