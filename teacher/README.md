@@ -138,6 +138,21 @@ memorising rather than learning; stop there, or give it more material.
 **Perplexity** is just `e^loss` — roughly, how many tokens it was choosing
 between. 2.6 means it was almost sure each time.
 
+After every lesson Teacher reads those numbers against `ln(vocabulary)` — the
+loss of a model that is still guessing — and says where the model actually
+stands, with the next command to run:
+
+| Share of the untrained baseline | What it writes |
+|---|---|
+| above 70% | noise, and broken characters where it picks half a letter |
+| 55–70% | word fragments |
+| 28–55% | whole words, in no particular order |
+| 15–28% | sentences in the shape of your material |
+| under 15% | about as far as a model this size can go on this material |
+
+Those bands are calibrated against real runs, not guessed. If a lesson leaves
+the model in the top band, it will say so rather than claiming it is ready.
+
 ---
 
 ## What to expect
@@ -169,6 +184,11 @@ The preflight check caught it before the crash. Follow the suggestions it prints
 **The model repeats itself**
 Raise `--temperature`, or teach it more varied material. A small model trained on
 repetitive text will faithfully reproduce that repetition.
+
+**The output has ◆ or � characters in it**
+Not an encoding problem. The tokenizer works on bytes, so some tokens are half of
+a multi-byte character; a model that is still guessing picks them at random and
+half a character cannot be shown. They disappear as it learns — teach it more.
 
 **I want the previous version back**
 Copy the three files out of `checkpoints/before-<timestamp>/` over the ones in

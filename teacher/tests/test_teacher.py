@@ -17,6 +17,7 @@ TMP_HOME = Path(tempfile.mkdtemp(prefix="teacher-tests-"))
 os.environ["TEACHER_HOME"] = str(TMP_HOME)
 
 from teacher import lessons, workspace  # noqa: E402
+from teacher.lessons import verdict  # noqa: E402
 from teacher.material import gather  # noqa: E402
 from teacher.workspace import TeacherError  # noqa: E402
 
@@ -184,6 +185,48 @@ def test_a_seed_repeats_the_same_answer(taught):
     first, _ = lessons.talk(model, "the cat", max_new_tokens=16, seed=42)
     second, _ = lessons.talk(model, "the cat", max_new_tokens=16, seed=42)
     assert first == second
+
+
+# ------------------------------------------------------------------ verdict
+# Each pair below was measured from a real run, so the labels stay tied to what
+# a model at that loss actually writes.
+@pytest.mark.parametrize(
+    "loss,vocab,expected,observed",
+    [
+        (4.87, 329, "barely started", "noise and broken characters"),
+        (3.41, 329, "learning the alphabet", "word fragments"),
+        (2.89, 329, "learning words", "whole words in no order"),
+        (0.95, 369, "learning sentences", "full sentences"),
+        (0.53, 346, "has the shape of your text", "fluent in the source style"),
+    ],
+)
+def test_the_verdict_matches_what_the_model_writes(loss, vocab, expected, observed):
+    label, note, _share = verdict(loss, vocab)
+    assert label == expected, f"at loss {loss} the model writes {observed}, not '{label}'"
+    assert note
+
+
+def test_the_verdict_improves_as_the_loss_falls():
+    shares = [verdict(loss, 329)[2] for loss in (4.9, 3.4, 2.0, 1.0, 0.3)]
+    assert shares == sorted(shares, reverse=True)
+
+
+def test_a_bigger_vocabulary_moves_the_baseline():
+    # The same loss is further along for a small vocabulary than a large one.
+    _label, _note, small = verdict(3.0, 300)
+    _label, _note, large = verdict(3.0, 30000)
+    assert small > large
+
+
+def test_no_held_out_set_is_reported_as_unmeasured():
+    label, note, _share = verdict(None, 329)
+    assert label == "unmeasured"
+    assert "nothing to judge" in note
+
+
+def test_the_verdict_reads_the_vocabulary_off_the_model(taught):
+    model, built, _lesson = taught
+    assert lessons.model_vocab(model) == built["vocab_size"]
 
 
 # --------------------------------------------------------------------- pack

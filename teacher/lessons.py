@@ -267,6 +267,41 @@ def talk(model: Model, prompt: str, *, max_new_tokens: int = 120, temperature: f
     }
 
 
+# ------------------------------------------------------------------ verdict
+# An untrained model's loss sits at ln(vocabulary): it is guessing uniformly.
+# Progress is best read as a fraction of that baseline, because the baseline
+# moves with the vocabulary size.
+STAGES = (
+    (0.70, "barely started",
+     "It is still close to guessing. Expect noise, and broken characters where it "
+     "picks half of a multi-byte letter."),
+    (0.55, "learning the alphabet",
+     "Fragments of real words, in no particular order."),
+    (0.28, "learning words",
+     "Recognisable words, shaky sentences."),
+    (0.15, "learning sentences",
+     "Sentences in the shape of your material."),
+    (0.00, "has the shape of your text",
+     "About as far as a model this size can go on this material."),
+)
+
+
+def verdict(held_out_loss: float | None, vocab_size: int) -> tuple[str, str, float]:
+    """Describe how far along a model is, as a share of the untrained baseline."""
+    baseline = math.log(max(vocab_size, 2))
+    if held_out_loss is None:
+        return "unmeasured", "No held-out text, so there is nothing to judge it by.", 1.0
+    share = max(held_out_loss, 0.0) / baseline
+    for threshold, label, note in STAGES:
+        if share >= threshold:
+            return label, note, share
+    return STAGES[-1][1], STAGES[-1][2], share
+
+
+def model_vocab(model: Model) -> int:
+    return int(model.architecture().get("vocab_size") or 2)
+
+
 def describe_sizes() -> str:
     lines = []
     for key, (preset, blurb) in SIZES.items():

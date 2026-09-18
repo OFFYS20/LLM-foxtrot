@@ -123,8 +123,31 @@ def run_lesson(model, material, args) -> int:
     if lesson["held_out_loss"] is not None:
         say(f"  on held-out:   {lesson['held_out_loss']:.4f}  (perplexity {lesson['perplexity']:.1f})")
     say(f"  took:          {lesson['seconds']:.1f}s on {lesson['device']}")
-    say(style(f"\n  {model.name} is ready. Try: teacher ask {model.name} \"...\"", DIM))
+
+    report_progress(model, lesson, args)
     return 0
+
+
+def report_progress(model, lesson, args) -> None:
+    """Say how far along the model is, and what to do next — not just "ready"."""
+    label, note, share = lessons.verdict(lesson["held_out_loss"], lessons.model_vocab(model))
+    say(f"\n  {style(model.name + ': ' + label, BOLD)}")
+    say(style(f"  {note}", DIM))
+
+    source = " ".join(f'--from "{path}"' for path in (args.source or [])) or "--from <your text>"
+    if share >= 0.55:
+        more = max(10, int(args.epochs * 4))
+        say(f"\n  Not done yet — teach it again, longer:")
+        say(f"    python -m teacher teach {model.name} {source} --epochs {more}")
+    elif share >= 0.15:
+        more = max(10, int(args.epochs * 2))
+        say(f"\n  Worth another lesson:")
+        say(f"    python -m teacher teach {model.name} {source} --epochs {more}")
+        say(style("  Stop when the held-out number stops falling between lessons.", DIM))
+    else:
+        say(f"\n  Try it:  python -m teacher ask {model.name} \"...\"")
+        say(style("  If it still disappoints, it needs more material rather than more "
+                  "epochs.", DIM))
 
 
 def cmd_ask(args) -> int:
