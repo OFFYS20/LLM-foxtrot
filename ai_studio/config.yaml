@@ -1,0 +1,57 @@
+# AI Studio configuration.
+# Every value can also be set through the environment:
+#   AISTUDIO_<SECTION>_<FIELD>, e.g. AISTUDIO_UI_PORT=7861
+
+storage:
+  root: "./storage"
+  models: "./storage/models"
+  datasets: "./storage/datasets"
+  checkpoints: "./storage/checkpoints"
+  documents: "./storage/documents"
+  tokenizers: "./storage/tokenizers"
+  indexes: "./storage/indexes"
+  exports: "./storage/exports"
+  database: "./storage/ai_studio.db"
+
+training:
+  default_precision: "bf16"      # fp32 | fp16 | bf16 (falls back to fp32 on CPU)
+  checkpoint_interval: 500
+  eval_interval: 250
+  log_interval: 10
+  keep_last_checkpoints: 3
+  seed: 42
+  max_sequence_length: 512
+  gradient_checkpointing: false
+  num_workers: 0
+
+data:
+  chunk_size: 1024
+  chunk_overlap: 128
+  min_chunk_chars: 64
+  max_chunk_chars: 40000
+  train_split: 0.90
+  validation_split: 0.05
+  test_split: 0.05
+  max_upload_mb: 512
+
+rag:
+  embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+  chunk_size: 800
+  chunk_overlap: 120
+  top_k: 4
+  min_score: 0.0
+
+inference:
+  temperature: 0.8
+  top_p: 0.95
+  top_k: 50
+  max_new_tokens: 512
+  repetition_penalty: 1.1
+  context_strategy: "trim_oldest"   # trim_oldest | summarize | new_context | retrieve
+
+ui:
+  host: "127.0.0.1"
+  port: 7860
+  share: false
+  title: "AI Studio"
+  refresh_seconds: 2.0

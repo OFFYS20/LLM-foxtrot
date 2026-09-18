@@ -1,0 +1,40 @@
+# AI Studio — runtime dependencies.
+#
+# Install with:   pip install -r requirements.txt
+#
+# PyTorch: the default wheel on PyPI is CPU-only on Linux/Windows. For an
+# NVIDIA GPU install the CUDA build FIRST, then run this file:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+# See README.md ("GPU setup") for details.
+
+# --- core ML -----------------------------------------------------------------
+torch>=2.2
+transformers>=4.40
+tokenizers>=0.19
+datasets>=2.18
+accelerate>=0.29
+peft>=0.10
+safetensors>=0.4
+
+# --- retrieval ---------------------------------------------------------------
+sentence-transformers>=2.7
+faiss-cpu>=1.8
+
+# --- document ingestion ------------------------------------------------------
+pymupdf>=1.24          # PDF
+python-docx>=1.1       # .docx
+EbookLib>=0.18         # .epub
+beautifulsoup4>=4.12   # HTML
+lxml>=5.1              # faster HTML/EPUB parsing
+
+# --- data --------------------------------------------------------------------
+pandas>=2.2
+numpy>=1.26
+pyyaml>=6.0
+
+# --- hardware telemetry ------------------------------------------------------
+psutil>=5.9
+nvidia-ml-py>=12.535   # NVIDIA GPU metrics; harmless on machines without one
+
+# --- interface ---------------------------------------------------------------
+gradio>=5.0
