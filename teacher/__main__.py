@@ -27,8 +27,24 @@ def style(text: str, code: str) -> str:
     return f"{code}{text}{OFF}" if sys.stdout.isatty() else text
 
 
+#: When true, prose goes nowhere and every command ends in one JSON object.
+_JSON = {"on": False}
+
+
 def say(message: str = "") -> None:
+    if _JSON["on"]:
+        return
     print(message, flush=True)
+
+
+def emit(**payload) -> int:
+    """The machine-readable result of a command. Prints only in --json mode."""
+    if not _JSON["on"]:
+        return 0
+    import json as _json
+
+    print(_json.dumps({"ok": True, **payload}, default=str, indent=2), flush=True)
+    return 0
 
 
 def fmt_count(value: float | int | None) -> str:
@@ -74,12 +90,23 @@ def cmd_new(args) -> int:
     say(f"{style('Reading material', BOLD)}")
     material = collect(args)
 
-    say(f"\n{style('Building ' + model.name, BOLD)}")
-    built = lessons.create(model, material, args.size, context=args.context)
-    say(f"  size:       {built['size']} ({built['preset']})")
-    say(f"  parameters: {fmt_count(built['parameters'])}")
-    say(f"  vocabulary: {built['vocab_size']:,} tokens")
-    say(f"  context:    {built['context']} tokens")
+    if args.base:
+        say(f"\n{style('Adopting ' + args.base, BOLD)}")
+        say(style("  downloading — this happens once", DIM))
+        built = lessons.adopt(model, args.base, trust_remote_code=args.trust_remote_code)
+        say(f"  base:       {built['base']}")
+        say(f"  parameters: {fmt_count(built['parameters'])}")
+        say(f"  vocabulary: {built['vocab_size']:,} tokens")
+        say(f"  context:    {built['context']} tokens")
+        say(style("  it already writes the language it was trained on; your lessons "
+                  "teach it your material", DIM))
+    else:
+        say(f"\n{style('Building ' + model.name, BOLD)}")
+        built = lessons.create(model, material, args.size, context=args.context)
+        say(f"  size:       {built['size']} ({built['preset']})")
+        say(f"  parameters: {fmt_count(built['parameters'])}")
+        say(f"  vocabulary: {built['vocab_size']:,} tokens")
+        say(f"  context:    {built['context']} tokens")
     say(style(f"  stored in {model.path}", DIM))
 
     if args.no_teach:
@@ -128,7 +155,10 @@ def run_lesson(model, material, args) -> int:
     say(f"  took:          {lesson['seconds']:.1f}s on {lesson['device']}")
 
     report_progress(model, lesson, args)
-    return 0
+    label, _note, share = lessons.judge(model, lesson["held_out_loss"])
+    return emit(command="teach", model=model.name, stage=label, share=round(share, 4),
+                held_out_loss=lesson["held_out_loss"], epochs=lesson["epochs"],
+                seconds=lesson["seconds"], device=lesson["device"])
 
 
 def run_until(model, material, args) -> int:
@@ -165,7 +195,7 @@ def run_until(model, material, args) -> int:
     say(f"  took:          {fmt_duration(summary['seconds'])} on {summary['device']}")
     say(f"  stopped:       {summary['reason']}")
 
-    label, note, share = lessons.verdict(last_loss, lessons.model_vocab(model))
+    label, note, share = lessons.judge(model, last_loss)
     say(f"\n  {style(model.name + ': ' + label, BOLD)}")
     say(style(f"  {note}", DIM))
 
@@ -173,7 +203,10 @@ def run_until(model, material, args) -> int:
         say(style("\n  More epochs will not help from here — it needs more material.", DIM))
     else:
         say(f"\n  Try it:  python -m teacher ask {model.name} \"...\"")
-    return 0
+    return emit(command="teach", model=model.name, stage=label, share=round(share, 4),
+                rounds=summary["rounds"], epochs=summary["epochs"],
+                held_out_loss=summary["held_out_loss"], first_loss=summary["first_loss"],
+                reason=summary["reason"], seconds=summary["seconds"])
 
 
 def fmt_duration(seconds: float) -> str:
@@ -188,7 +221,7 @@ def fmt_duration(seconds: float) -> str:
 
 def report_progress(model, lesson, args) -> None:
     """Say how far along the model is, and what to do next — not just "ready"."""
-    label, note, share = lessons.verdict(lesson["held_out_loss"], lessons.model_vocab(model))
+    label, note, share = lessons.judge(model, lesson["held_out_loss"])
     say(f"\n  {style(model.name + ': ' + label, BOLD)}")
     say(style(f"  {note}", DIM))
 
@@ -224,8 +257,7 @@ def cmd_ask(args) -> int:
             say("")
             return 0
 
-    respond(model, prompt, args)
-    return 0
+    return respond(model, prompt, args)
 
 
 def respond(model, prompt: str, args) -> None:
@@ -241,6 +273,7 @@ def respond(model, prompt: str, args) -> None:
     say(style(
         f"\n  {stats['generated']} tokens at {stats['tokens_per_second']:.0f}/s"
         f" (prompt {stats['prompt_tokens']})", DIM))
+    return emit(command="ask", model=model.name, prompt=prompt, reply=text, **stats)
 
 
 def cmd_list(args) -> int:
@@ -268,7 +301,120 @@ def cmd_list(args) -> int:
             f"{fmt_count(model.taught_characters()) + 'c':>12}"
             f"{len(history.get('lessons', [])):>9}{fmt_bytes(model.size_bytes()):>9}")
     say(style(f"\nin {workspace.root()}", DIM))
+    return emit(command="list", home=str(workspace.root()), models=[
+        {"name": m.name, "kind": m.kind(), "base": m.base_repo(),
+         "lessons": len(m.history().get("lessons", [])),
+         "taught_characters": m.taught_characters()}
+        for m in models
+    ])
+
+
+GUIDE = """\
+You are driving Teacher, a program on my computer that trains small language
+models from my own text. Run the commands for me and tell me what happened in
+plain language — I do not want to read terminal output.
+
+WHERE THINGS ARE
+  Run every command from:  {repo}
+  Models are stored in:    {home}
+  Python to use:           {python}
+
+HOW TO TALK TO IT
+  Add --json to any command and you get one JSON object back instead of prose:
+  {{"ok": true, ...}} on success, {{"ok": false, "error": "..."}} on failure.
+  Read that, not the human text. Never invent a result you did not run.
+
+THE COMMANDS
+  {python} -m teacher --json list
+      What models exist already.
+
+  {python} -m teacher --json bases
+      Pretrained models worth starting from.
+
+  {python} -m teacher --json new NAME --base small --from PATH
+      Make a model starting from a pretrained one (best output, needs a
+      download). Drop --base to build from scratch instead, which also takes
+      --size tiny|small|medium|large.
+
+  {python} -m teacher --json teach NAME --from PATH --until best
+      Teach it until it stops improving. Add --epochs N to set the size of one
+      round, --max-rounds N to cap it, --max-minutes N to put a clock on it.
+      Returns stage, held_out_loss, rounds and why it stopped.
+
+  {python} -m teacher --json ask NAME "some words"
+      Get a continuation. Returns the reply and how fast it ran.
+
+  {python} -m teacher --json show NAME
+      Architecture, every lesson, and how far along it is.
+
+  PATH is a file or a folder. It reads .txt .md .pdf .docx .epub .html .csv
+  .json and walks folders. --text "..." works instead of --from for short text.
+
+WHAT THE RESULTS MEAN
+  "stage" is how far along the model is. For one built from scratch:
+  barely started -> learning the alphabet -> learning words -> learning
+  sentences -> has the shape of your text. For one started from a pretrained
+  model: barely moved -> picking up your material -> adapting well ->
+  closely fitted.
+  "held_out_loss" is measured on text it never trained on. Lower is better.
+  Falling between lessons means it is still learning; flat means it has
+  stopped, and more epochs will not help — it needs more material.
+
+RULES
+  - Ask me where my text is before you start. Do not guess a path.
+  - Start from a pretrained model unless I say I want to watch one learn from
+    nothing; the output is far better.
+  - Use --until best rather than picking an epoch count.
+  - If a command returns ok:false, tell me the error and what to do about it.
+    Do not retry the same thing.
+  - Training takes minutes to hours. Say so before starting a long one.
+  - Tell me the stage and whether it is still improving. Skip the numbers
+    unless I ask.
+"""
+
+
+def cmd_guide(args) -> int:
+    """Instructions a person can paste into another AI so it drives Teacher."""
+    repo = Path(__file__).resolve().parent.parent
+    python = sys.executable or "python"
+    text = GUIDE.format(repo=repo, home=workspace.root(), python=python)
+    if _JSON["on"]:
+        return emit(command="guide", guide=text, repo=str(repo),
+                    home=str(workspace.root()), python=python)
+    say(style("Copy everything below into ChatGPT, Claude or any assistant that "
+              "can run commands on this machine.\n", DIM))
+    say("-" * 72)
+    say(text)
+    say("-" * 72)
     return 0
+
+
+def cmd_ui(args) -> int:
+    try:
+        from teacher import ui
+    except ImportError as exc:
+        raise TeacherError(
+            f"The window needs gradio: pip install gradio  ({exc})"
+        ) from exc
+    say(f"Opening Teacher at http://{args.host}:{args.port}")
+    say(style("Close this window or press Ctrl-C to stop it.\n", DIM))
+    ui.launch(host=args.host, port=args.port, share=args.share,
+              open_browser=not args.no_browser)
+    return 0
+
+
+def cmd_bases(args) -> int:
+    say("Starting from a pretrained model teaches it your material instead of the")
+    say("language itself. Use any Hugging Face name, or one of these shortcuts:\n")
+    say(f"  {'SHORTCUT':<12}{'MODEL':<36}NOTES")
+    for key, (repo, note) in lessons.BASES.items():
+        say(f"  {key:<12}{repo:<36}{note}")
+    say(style("\n  python -m teacher new mymodel --base small --from ./mytext", DIM))
+    say(style("  Models built this way run in the Teacher UI, not the Bench web page.", DIM))
+    return emit(command="bases", bases=[
+        {"shortcut": key, "repo": repo, "note": note}
+        for key, (repo, note) in lessons.BASES.items()
+    ])
 
 
 def cmd_show(args) -> int:
@@ -299,7 +445,13 @@ def cmd_show(args) -> int:
         say(f"    {index:>2}. {when}  loss {loss:.4f}   "
             f"{fmt_count(lesson.get('characters'))}c  {first}{more}"
             if loss is not None else f"    {index:>2}. {when}  {first}{more}")
-    return 0
+
+    last = lessons_taught[-1]
+    label, note, share = lessons.judge(model, last.get("held_out_loss"))
+    return emit(command="show", model=model.name, kind=model.kind(), base=model.base_repo(),
+                architecture=arch, lessons=len(lessons_taught), stage=label, advice=note,
+                share=round(share, 4), held_out_loss=last.get("held_out_loss"),
+                taught_characters=model.taught_characters(), path=str(model.path))
 
 
 def cmd_pack(args) -> int:
@@ -336,6 +488,8 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="sizes:\n" + lessons.describe_sizes(),
     )
     parser.add_argument("--version", action="version", version=f"teacher {__version__}")
+    parser.add_argument("--json", action="store_true",
+                        help="print one JSON object instead of prose, for scripts and AI assistants")
     subs = parser.add_subparsers(dest="command", required=True)
 
     def add_material(sub):
@@ -361,7 +515,12 @@ def build_parser() -> argparse.ArgumentParser:
     new = subs.add_parser("new", help="build a new model and teach it its first lesson")
     new.add_argument("name")
     new.add_argument("--size", default="tiny", choices=list(lessons.SIZES),
-                     help="how big to make it (default tiny)")
+                     help="how big to make it from scratch (default tiny)")
+    new.add_argument("--base", metavar="MODEL",
+                     help="start from a pretrained model instead of from noise — a shortcut ("
+                          + ", ".join(lessons.BASES) + ") or any Hugging Face name")
+    new.add_argument("--trust-remote-code", dest="trust_remote_code", action="store_true",
+                     help="allow a base model to run its own code (only for repos you trust)")
     new.add_argument("--context", type=int, default=0, help="context length in tokens")
     new.add_argument("--replace", action="store_true", help="overwrite a model of the same name")
     new.add_argument("--no-teach", action="store_true", help="build it but do not train yet")
@@ -387,6 +546,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     listing = subs.add_parser("list", help="show every model you have")
     listing.set_defaults(func=cmd_list)
+
+    bases = subs.add_parser("bases", help="pretrained models worth starting from")
+    bases.set_defaults(func=cmd_bases)
+
+    guide = subs.add_parser(
+        "guide", help="print instructions to paste into ChatGPT or Claude so it can drive Teacher")
+    guide.set_defaults(func=cmd_guide)
+
+    ui = subs.add_parser("ui", help="open the window — everything here, without the terminal")
+    ui.add_argument("--port", type=int, default=7861)
+    ui.add_argument("--host", default="127.0.0.1")
+    ui.add_argument("--share", action="store_true", help="make a public link")
+    ui.add_argument("--no-browser", dest="no_browser", action="store_true")
+    ui.set_defaults(func=cmd_ui)
 
     show = subs.add_parser("show", help="what one model is and what it has been taught")
     show.add_argument("name")
@@ -417,11 +590,17 @@ def quiet_library_logging() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    _JSON["on"] = bool(getattr(args, "json", False))
     quiet_library_logging()
     try:
         return args.func(args)
     except TeacherError as exc:
-        say(f"\n{style('Stopped:', BOLD)} {exc}")
+        if _JSON["on"]:
+            import json as _json
+
+            print(_json.dumps({"ok": False, "error": str(exc)}, indent=2), flush=True)
+        else:
+            say(f"\n{style('Stopped:', BOLD)} {exc}")
         return 1
     except KeyboardInterrupt:
         say("\nStopped. Nothing was overwritten.")

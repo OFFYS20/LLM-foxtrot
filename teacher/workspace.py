@@ -60,6 +60,14 @@ class Model:
         except json.JSONDecodeError:
             return {"name": self.name, "created_at": None, "lessons": []}
 
+    def note(self, **fields) -> None:
+        """Store facts about the model itself, beside its lesson history."""
+        history = self.history()
+        history.setdefault("name", self.name)
+        history.setdefault("lessons", [])
+        history.update(fields)
+        self.history_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
+
     def record(self, entry: dict) -> None:
         """Append one lesson to the model's record. Never rewrites earlier ones."""
         history = self.history()
@@ -76,6 +84,14 @@ class Model:
     def size_bytes(self) -> int:
         return sum(f.stat().st_size for f in self.path.rglob("*") if f.is_file())
 
+    def kind(self) -> str:
+        """"studio" for one built here, "pretrained" for one adopted from the Hub."""
+        model_type = self.architecture().get("model_type", "")
+        return "studio" if model_type == "ai_studio_transformer" else "pretrained"
+
+    def base_repo(self) -> str | None:
+        return self.history().get("base_repo")
+
     def architecture(self) -> dict:
         if not self.config_path.exists():
             return {}
@@ -87,6 +103,12 @@ class Model:
     # -------------------------------------------------------------- copy
     def pack(self, destination: Path) -> list[str]:
         """Copy just the three files Bench needs into ``destination``."""
+        if self.kind() != "studio":
+            raise TeacherError(
+                f"{self.name} is built on {self.base_repo() or 'a pretrained model'}, and the "
+                f"Bench web page only runs models built here. Chat with it in the Teacher UI "
+                f"or with: teacher ask {self.name}"
+            )
         destination.mkdir(parents=True, exist_ok=True)
         copied = []
         for name in REQUIRED:

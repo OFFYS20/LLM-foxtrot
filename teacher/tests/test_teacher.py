@@ -334,6 +334,50 @@ def test_every_round_is_saved_so_stopping_early_keeps_the_work(material_dir):
     assert stats["generated"] > 0
 
 
+# --------------------------------------------------------------- pretrained
+def test_a_scratch_model_is_recognised_as_built_here(taught):
+    model, _built, _lesson = taught
+    assert model.kind() == "studio"
+    assert model.base_repo() is None
+
+
+def test_the_verdict_uses_the_right_baseline_for_each_kind():
+    # From scratch the baseline is ln(vocab); adopted, it is where it started.
+    scratch, _n, scratch_share = lessons.verdict(3.0, 300)
+    fitted, _n, fitted_share = lessons.verdict(3.0, 49152, baseline=4.0)
+    assert scratch in [row[1] for row in lessons.STAGES]
+    assert fitted in [row[1] for row in lessons.FITTING]
+    assert scratch_share != fitted_share
+
+
+def test_every_suggested_base_has_a_repo_and_a_note():
+    for shortcut, (repo, note) in lessons.BASES.items():
+        assert "/" in repo, f"{shortcut} should name a Hugging Face repo"
+        assert note
+
+
+def test_a_pretrained_model_cannot_be_packed_for_the_browser(tmp_path):
+    """Bench only runs the studio architecture, so pack must refuse, not mislead."""
+    model = workspace.Model(name="borrowed", path=tmp_path / "borrowed")
+    model.path.mkdir()
+    (model.path / "config.json").write_text('{"model_type": "gpt2"}')
+    (model.path / "model.safetensors").write_bytes(b"x")
+    (model.path / "tokenizer.json").write_text("{}")
+
+    assert model.kind() == "pretrained"
+    with pytest.raises(TeacherError) as excinfo:
+        model.pack(tmp_path / "out")
+    assert "only runs models built here" in str(excinfo.value)
+
+
+def test_notes_are_kept_beside_the_lessons(taught):
+    model, _built, _lesson = taught
+    before = len(model.history()["lessons"])
+    model.note(base_repo="somewhere/else")
+    assert model.history()["base_repo"] == "somewhere/else"
+    assert len(model.history()["lessons"]) == before, "a note must not disturb the lessons"
+
+
 # --------------------------------------------------------------------- pack
 def test_pack_copies_exactly_what_the_web_page_needs(taught, tmp_path):
     model, _built, _lesson = taught

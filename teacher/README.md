@@ -24,7 +24,17 @@ pip install -r requirements.txt
 cd ..
 ```
 
-Run it from the repository root:
+### The window
+
+```bash
+python -m teacher ui
+```
+
+Or double-click `Start-Teacher.bat` (Windows) / run `./start-teacher.sh`. Every
+command below has a button in that window, and both share one store — make a
+model in the window, teach it from a script.
+
+### The commands
 
 ```bash
 python -m teacher --help
@@ -68,8 +78,35 @@ more than once to combine sources, or use `--text "..."` for something short.
 | `show NAME` | One model's architecture and its full lesson history |
 | `pack NAME -o DIR` | Copies `model.safetensors`, `config.json` and `tokenizer.json` |
 | `forget NAME --yes` | Deletes a model and everything it learned |
+| `ui` | Opens the window — everything above, without the terminal |
+| `bases` | Pretrained models worth starting from |
+| `guide` | Prints instructions to paste into ChatGPT or Claude so it drives Teacher |
 
-### Sizes
+Add `--json` to any command for one machine-readable object instead of prose.
+
+### Starting from a pretrained model
+
+Building from scratch means the model learns English *and* your material out of
+your text alone, which takes a lot of both. Adopting one that can already write
+skips the first half:
+
+```bash
+python -m teacher new bookbot --base small --from ./my-books
+python -m teacher bases          # what else is on offer
+```
+
+`--base` takes a shortcut (`small`, `gpt2`, `medium`) or any Hugging Face name.
+The download happens once.
+
+Progress is judged differently for these: the baseline is the model's own first
+lesson rather than a uniform guess, so the stages read *barely moved → picking up
+your material → adapting well → closely fitted*.
+
+One limit: the Bench web page only runs models built from scratch here, so
+`pack` refuses an adopted one and says so. Chat with it in the window or with
+`teacher ask`.
+
+### Sizes (from scratch)
 
 Each tier is ten times the one below it:
 

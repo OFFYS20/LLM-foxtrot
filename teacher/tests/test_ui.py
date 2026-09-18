@@ -1,0 +1,81 @@
+"""The window: the pieces that shape what a person sees, without launching it."""
+
+from __future__ import annotations
+
+import os
+import tempfile
+from pathlib import Path
+
+import pytest
+
+TMP_HOME = Path(tempfile.mkdtemp(prefix="teacher-ui-tests-"))
+os.environ["TEACHER_HOME"] = str(TMP_HOME)
+
+from teacher import lessons, workspace  # noqa: E402
+from teacher import ui  # noqa: E402
+from teacher.workspace import TeacherError  # noqa: E402
+
+
+def test_the_window_builds():
+    """Gradio validates every component and wiring as it constructs the page."""
+    assert ui.build() is not None
+
+
+def test_an_empty_workspace_says_so():
+    assert "No model selected" in ui.describe("")
+
+
+def test_a_missing_model_is_explained_not_crashed():
+    assert "no model called" in ui.describe("never-made").lower()
+
+
+def test_errors_a_person_can_fix_are_shown_plainly():
+    friendly = ui.friendly(TeacherError("Give the model a name."))
+    assert "Stopped" in friendly and "Give the model a name." in friendly
+    assert "Traceback" not in friendly
+
+
+def test_unexpected_errors_still_name_the_type():
+    friendly = ui.friendly(ValueError("something odd"))
+    assert "ValueError" in friendly
+
+
+@pytest.mark.parametrize("value,expected", [(950, "950"), (12_500, "12.5K"), (2_400_000, "2.4M"),
+                                            (1_200_000_000, "1.20B"), (None, "—")])
+def test_counts_are_readable(value, expected):
+    assert ui.fmt(value) == expected
+
+
+def test_the_card_never_runs_paragraphs_together(tmp_path):
+    """Markdown needs blank lines, or the layers line joins the vocabulary line."""
+    model = workspace.get("carded", must_exist=False)
+    model.path.mkdir(parents=True, exist_ok=True)
+    (model.path / "config.json").write_text(
+        '{"model_type": "ai_studio_transformer", "vocab_size": 315, "num_layers": 4,'
+        ' "hidden_size": 128, "num_heads": 4, "max_position_embeddings": 256}'
+    )
+    # A card is only drawn for a complete model, so give it the other two files.
+    (model.path / "model.safetensors").write_bytes(b"stub")
+    (model.path / "tokenizer.json").write_text("{}")
+
+    card = ui.describe("carded")
+    assert "vocabulary 315\n\n4 layers" in card, card
+
+
+def test_the_picker_offers_every_model_that_exists(tmp_path):
+    names = ui.model_names()
+    assert "carded" in names
+
+
+def test_refresh_returns_an_update_for_each_picker_and_the_card():
+    *updates, card = ui.refresh_everything(None)
+    assert len(updates) == 3, "the three picker outputs must each get an update"
+    assert isinstance(card, str)
+
+
+def test_material_from_a_folder_and_pasted_text_combine(tmp_path):
+    (tmp_path / "a.txt").write_text("alpha beta gamma " * 50, encoding="utf-8")
+    material = ui.collect(None, "pasted words here", str(tmp_path))
+    assert material.characters > 0
+    assert "pasted words here" in material.text
+    assert "alpha beta" in material.text

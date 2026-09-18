@@ -33,6 +33,15 @@ SIZES = {
     "large": ("huge-1b", "a serious GPU (24GB+) and gigabytes of text"),
 }
 
+#: Pretrained starting points that are realistic to fine-tune at home. Anything
+#: on the Hub works with --base, these are just the ones worth suggesting.
+BASES = {
+    "small": ("HuggingFaceTB/SmolLM2-135M", "135M — writes real English, fine-tunes on a CPU"),
+    "gpt2": ("openai-community/gpt2", "124M — the classic; older, still capable"),
+    "medium": ("HuggingFaceTB/SmolLM2-360M", "360M — better prose, wants a GPU"),
+    "tiny-test": ("sshleifer/tiny-gpt2", "0.1M — a stub for checking the plumbing, not for use"),
+}
+
 SPECIALS = ["<unk>", "<s>", "</s>", "<pad>"]
 MIN_CHARACTERS = 2_000
 
@@ -64,12 +73,20 @@ def train_tokenizer(text: str, vocab_size: int) -> Tokenizer:
     return tokenizer
 
 
-def load_tokenizer(model: Model) -> PreTrainedTokenizerFast:
-    fast = PreTrainedTokenizerFast(
+def load_tokenizer(model: Model):
+    """Load the model's own tokenizer — an adopted one brings its own specials."""
+    if model.kind() != "studio":
+        from transformers import AutoTokenizer
+
+        fast = AutoTokenizer.from_pretrained(str(model.path))
+        if fast.pad_token is None:
+            fast.pad_token = fast.eos_token
+        return fast
+
+    return PreTrainedTokenizerFast(
         tokenizer_file=str(model.tokenizer_path),
         bos_token="<s>", eos_token="</s>", unk_token="<unk>", pad_token="<pad>",
     )
-    return fast
 
 
 # ------------------------------------------------------------------ create
@@ -115,6 +132,74 @@ def create(model: Model, material: Material, size: str, *, context: int = 0) -> 
     }
 
 
+# ------------------------------------------------------------------ adopt
+def adopt(model: Model, base: str, *, trust_remote_code: bool = False) -> dict:
+    """Download a pretrained model and make it the starting point for this one.
+
+    Starting from a model that already knows a language beats starting from
+    noise: the lessons then teach it your material rather than English itself.
+    """
+    repo = BASES.get(base, (base, ""))[0]
+    try:
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+    except ImportError as exc:  # pragma: no cover - transformers is a hard dependency
+        raise TeacherError("transformers is not installed.") from exc
+
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(repo, trust_remote_code=trust_remote_code)
+        network = AutoModelForCausalLM.from_pretrained(
+            repo, trust_remote_code=trust_remote_code, dtype=torch.float32
+        )
+    except Exception as exc:  # noqa: BLE001 - network, auth and bad names all land here
+        raise TeacherError(
+            f"Could not fetch '{repo}': {exc}\n"
+            f"Check the name on huggingface.co, and that you are online."
+        ) from exc
+
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    model.path.mkdir(parents=True, exist_ok=True)
+    network.save_pretrained(str(model.path))
+    tokenizer.save_pretrained(str(model.path))
+
+    if not model.tokenizer_path.exists():
+        raise TeacherError(
+            f"'{repo}' ships a tokenizer Teacher cannot save as tokenizer.json. "
+            f"Pick another base model."
+        )
+
+    parameters = sum(p.numel() for p in network.parameters())
+    context = int(getattr(network.config, "max_position_embeddings", 0)
+                  or getattr(network.config, "n_positions", 0) or 1024)
+    model.note(base_repo=repo, adopted_at=time.time())
+    return {
+        "base": repo,
+        "parameters": parameters,
+        "vocab_size": int(getattr(network.config, "vocab_size", 0)),
+        "context": context,
+        "model_type": getattr(network.config, "model_type", "unknown"),
+    }
+
+
+def load_network(model: Model):
+    """Load a model's weights, whichever kind it is."""
+    if model.kind() == "studio":
+        return TransformerLM.from_pretrained(str(model.path))
+    from transformers import AutoModelForCausalLM
+
+    return AutoModelForCausalLM.from_pretrained(str(model.path), dtype=torch.float32)
+
+
+def context_length(model: Model, network) -> int:
+    config = getattr(network, "config", None)
+    for field in ("max_position_embeddings", "n_positions"):
+        value = getattr(config, field, None)
+        if value:
+            return int(value)
+    return int(model.architecture().get("max_position_embeddings") or 1024)
+
+
 # ------------------------------------------------------------------- teach
 def teach(
     model: Model,
@@ -135,9 +220,10 @@ def teach(
         )
 
     tokenizer = load_tokenizer(model)
-    network = TransformerLM.from_pretrained(str(model.path))
-    config = network.config
-    block = config.max_position_embeddings
+    network = load_network(model)
+    # A pretrained model's context can be far longer than a lesson needs; cap it
+    # so one training block does not demand more material than there is.
+    block = min(context_length(model, network), 512)
 
     ids = tokenizer(material.text, add_special_tokens=False)["input_ids"]
     if len(ids) < block * 2:
@@ -209,6 +295,12 @@ def teach(
         "device": check.device,
         "status": result.status,
     }
+    if model.kind() != "studio" and model.history().get("base_loss") is None:
+        # The first measurement is this model's own starting point.
+        first = lesson["held_out_loss"] or lesson["final_loss"]
+        if first is not None:
+            model.note(base_loss=float(first))
+
     if record:
         model.record(lesson)
     return lesson
@@ -264,7 +356,6 @@ def teach_until(
         raise TeacherError(f"Unknown target '{target}'. Choose one of: {', '.join(TARGETS)}")
 
     ceiling = TARGETS[target]
-    vocab = model_vocab(model)
     started = time.time()
     deadline = started + max_minutes * 60 if max_minutes else None
 
@@ -275,7 +366,7 @@ def teach_until(
     # A model already past the target needs no lesson at all.
     previous = model.history().get("lessons", [])
     if previous and previous[-1].get("held_out_loss") is not None:
-        _label, _note, share = verdict(previous[-1]["held_out_loss"], vocab)
+        _label, _note, share = judge(model, previous[-1]["held_out_loss"])
         if ceiling and share < ceiling:
             return {
                 "rounds": 0,
@@ -297,7 +388,7 @@ def teach_until(
         )
         rounds.append(lesson)
         loss = lesson["held_out_loss"] or lesson["final_loss"]
-        label, _note, share = verdict(loss, vocab)
+        label, _note, share = judge(model, loss)
 
         if on_round:
             on_round(index, lesson, label, share)
@@ -351,7 +442,7 @@ def talk(model: Model, prompt: str, *, max_new_tokens: int = 120, temperature: f
          seed: int | None = None) -> tuple[str, dict]:
     """Generate a continuation, mirroring what the Bench page does in the browser."""
     tokenizer = load_tokenizer(model)
-    network = TransformerLM.from_pretrained(str(model.path)).eval()
+    network = load_network(model).eval()
 
     ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
     bos = tokenizer.bos_token_id
@@ -363,15 +454,29 @@ def talk(model: Model, prompt: str, *, max_new_tokens: int = 120, temperature: f
 
     started = time.time()
     with torch.no_grad():
-        output = network.generate(
-            torch.tensor([ids]),
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            top_k=top_k,
-            repetition_penalty=repetition_penalty,
-            eos_token_id=tokenizer.eos_token_id,
-        )
+        if model.kind() == "studio":
+            output = network.generate(
+                torch.tensor([ids]),
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                repetition_penalty=repetition_penalty,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+        else:
+            output = network.generate(
+                torch.tensor([ids]),
+                attention_mask=torch.ones(1, len(ids), dtype=torch.long),
+                max_new_tokens=max_new_tokens,
+                do_sample=temperature > 0,
+                temperature=max(temperature, 1e-5),
+                top_p=top_p,
+                top_k=top_k or None,
+                repetition_penalty=repetition_penalty,
+                pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+            )
     produced = output[0][len(ids):].tolist()
     elapsed = max(time.time() - started, 1e-6)
     text = tokenizer.decode(produced, skip_special_tokens=True)
@@ -402,16 +507,59 @@ STAGES = (
 )
 
 
-def verdict(held_out_loss: float | None, vocab_size: int) -> tuple[str, str, float]:
-    """Describe how far along a model is, as a share of the untrained baseline."""
-    baseline = math.log(max(vocab_size, 2))
+#: A pretrained model already knows a language, so the question is not whether it
+#: has learned to write but whether it has taken on *your* material. Its baseline
+#: is the loss of its own first lesson, not a uniform guess.
+FITTING = (
+    (0.95, "barely moved",
+     "It still writes like its base model. Teach it more, or give it more material."),
+    (0.75, "picking up your material",
+     "Your material is starting to show through its own voice."),
+    (0.55, "adapting well",
+     "It writes in the register of your material."),
+    (0.00, "closely fitted",
+     "Fitted to your material. Going further risks memorising it rather than "
+     "learning from it."),
+)
+
+
+def verdict(
+    held_out_loss: float | None,
+    vocab_size: int,
+    *,
+    baseline: float | None = None,
+) -> tuple[str, str, float]:
+    """Describe how far along a model is, as a share of where it started.
+
+    ``baseline`` is the loss it began from: ``ln(vocabulary)`` for a model built
+    from noise, or its own first measured loss for an adopted one.
+    """
     if held_out_loss is None:
         return "unmeasured", "No held-out text, so there is nothing to judge it by.", 1.0
-    share = max(held_out_loss, 0.0) / baseline
-    for threshold, label, note in STAGES:
+
+    stages = STAGES
+    if baseline is None:
+        baseline = math.log(max(vocab_size, 2))
+    else:
+        stages = FITTING
+
+    share = max(held_out_loss, 0.0) / max(baseline, 1e-9)
+    for threshold, label, note in stages:
         if share >= threshold:
             return label, note, share
-    return STAGES[-1][1], STAGES[-1][2], share
+    return stages[-1][1], stages[-1][2], share
+
+
+def baseline_for(model: Model) -> float | None:
+    """A pretrained model's starting loss, once its first lesson has measured it."""
+    if model.kind() == "studio":
+        return None
+    return model.history().get("base_loss")
+
+
+def judge(model: Model, held_out_loss: float | None) -> tuple[str, str, float]:
+    """The verdict for this model, using whichever baseline suits its kind."""
+    return verdict(held_out_loss, model_vocab(model), baseline=baseline_for(model))
 
 
 def model_vocab(model: Model) -> int:
