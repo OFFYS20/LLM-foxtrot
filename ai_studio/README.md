@@ -236,6 +236,12 @@ information is ever lost by experimenting with the settings.
 | `qa` | `{"question", "answer"}` | Question answering |
 | `chat` | `{"messages": [{"role", "content"}]}` | Multi-turn conversation |
 
+Structured examples can be imported directly instead: **Import records** takes a
+`.jsonl`, `.json` or `.csv` file and keeps each row's fields intact, which is
+what instruction tuning needs — flattening instruction pairs into raw text loses
+the structure. **Check file** reports how many rows are valid for the chosen
+mode and names the problem with each row that is not, before anything is built.
+
 Chunking uses the real tokenizer when one is selected, so "512 tokens" means 512
 tokens. Splits are assigned **by document**, so overlapping chunks of the same
 source cannot leak between train and test. With fewer than three documents that

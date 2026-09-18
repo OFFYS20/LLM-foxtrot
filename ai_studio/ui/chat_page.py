@@ -121,7 +121,12 @@ def render() -> None:
     def do_pick(conversation_id):
         if not conversation_id:
             return None, [], ""
-        return conversation_id, _history(conversation_id), ""
+        usage = convo.conversation_token_usage(conversation_id)
+        summary = t.stat_grid([
+            t.stat("Messages", t.fmt_number(usage["messages"])),
+            t.stat("Tokens in history", f"~{t.fmt_number(usage['tokens'])}"),
+        ])
+        return conversation_id, _history(conversation_id), summary
 
     conversation_picker.change(do_pick, conversation_picker, [state_conversation, chatbot, stats_html])
 

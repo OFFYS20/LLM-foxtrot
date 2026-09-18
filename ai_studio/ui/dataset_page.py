@@ -1,21 +1,26 @@
-"""Dataset Builder: turn documents into training datasets."""
+"""Dataset Builder: turn documents or structured records into training datasets."""
 
 from __future__ import annotations
 
+import csv
+import io
 import json
+from pathlib import Path
 from typing import Any
 
 import gradio as gr
 
-from ai_studio.core.errors import StudioError
+from ai_studio.core.errors import StudioError, ValidationError
 from ai_studio.data.dataset_builder import (
     DATASET_MODES,
     MODE_LABELS,
     BuildOptions,
     build_from_documents,
+    build_from_records,
     delete_dataset,
     list_datasets,
     preview_dataset,
+    validate_records,
 )
 from ai_studio.data.ingestion import list_documents
 from ai_studio.models.tokenizer_manager import list_tokenizers
@@ -26,6 +31,48 @@ FORMAT_HELP = {
     "chat": '{"messages": [{"role": "system", "content": "..."}, {"role": "user", ...}]}',
     "raw_lm": '{"text": "..."}',
 }
+
+
+def read_records(path: str) -> list[Any]:
+    """Parse a records file. JSONL, a JSON array, or a CSV with a header row."""
+    file = Path(path)
+    suffix = file.suffix.lower()
+    text = file.read_text(encoding="utf-8", errors="replace")
+
+    if suffix in {".jsonl", ".ndjson"}:
+        records: list[Any] = []
+        for number, line in enumerate(text.splitlines(), start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                raise ValidationError(f"Line {number} is not valid JSON: {exc.msg}") from exc
+        return records
+
+    if suffix == ".json":
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValidationError(f"Not valid JSON: {exc.msg}") from exc
+        if isinstance(payload, list):
+            return payload
+        for key in ("data", "records", "rows", "examples"):
+            if isinstance(payload.get(key), list):
+                return payload[key]
+        raise ValidationError(
+            "JSON must be an array of records, or an object with a data/records/rows array."
+        )
+
+    if suffix in {".csv", ".tsv"}:
+        delimiter = "\t" if suffix == ".tsv" else ","
+        reader = csv.DictReader(io.StringIO(text), delimiter=delimiter)
+        if not reader.fieldnames:
+            raise ValidationError("The file has no header row, so its columns cannot be named.")
+        return [dict(row) for row in reader]
+
+    raise ValidationError(f"Unsupported records file {file.suffix!r} — use .jsonl, .json or .csv.")
 
 
 def datasets_table() -> str:
@@ -98,6 +145,30 @@ def render() -> None:
         build_button = gr.Button("Build dataset", variant="primary")
     build_result = gr.HTML()
 
+    gr.Markdown("### Import records")
+    gr.HTML(t.note(
+        "Already have structured examples — a JSONL of instruction pairs, a CSV of "
+        "questions and answers? Import them directly. The rows keep their structure "
+        "instead of being flattened into raw text, which is what instruction tuning needs."))
+    with gr.Row():
+        records_file = gr.File(
+            label="Records file (.jsonl, .json, .csv)",
+            file_types=[".jsonl", ".ndjson", ".json", ".csv", ".tsv"],
+            type="filepath",
+        )
+        with gr.Column():
+            records_name = gr.Textbox(label="Dataset name", placeholder="my-instructions")
+            records_mode = gr.Dropdown(
+                [(MODE_LABELS[key], key) for key in DATASET_MODES], value="instruction",
+                label="Mode",
+            )
+            records_description = gr.Textbox(label="Description", lines=2)
+    with gr.Row():
+        records_check = gr.Button("Check file", size="sm")
+        records_build = gr.Button("Import as dataset", variant="primary")
+    records_result = gr.HTML()
+    records_preview = gr.Code(label="First rows", language="json")
+
     gr.Markdown("### Datasets")
     table = gr.HTML(datasets_table)
     with gr.Row():
@@ -164,6 +235,86 @@ def render() -> None:
         [name, documents, mode, tokenizer, description, block_size, overlap, train_split,
          val_split, test_split, dedupe, shuffle, group, seed],
         [build_result, table, preview_target],
+    )
+
+    # ------------------------------------------------------- record import
+    def _load_records(path, mode_value):
+        if not path:
+            raise ValidationError("Choose a file first.")
+        records = read_records(path)
+        if not records:
+            raise ValidationError("The file contains no rows.")
+        invalid, issues = validate_records(records, mode_value)
+        return records, invalid, issues
+
+    def do_check_records(path, mode_value):
+        try:
+            records, invalid, issues = _load_records(path, mode_value)
+        except StudioError as exc:
+            return t.error_message(exc), ""
+        except Exception as exc:  # noqa: BLE001
+            return t.error_message(exc), ""
+
+        valid = len(records) - invalid
+        tone = "good" if invalid == 0 else ("warn" if valid else "bad")
+        html = t.note(
+            f"{t.fmt_number(len(records))} row(s) read — <b>{t.fmt_number(valid)} valid</b> for "
+            f"{MODE_LABELS.get(mode_value, mode_value)}"
+            + (f", {t.fmt_number(invalid)} would be skipped." if invalid else "."),
+            tone,
+        )
+        for issue in issues[:5]:
+            html += t.note(f"row {issue['row']}: {issue['error']}", "warn")
+        if issues[5:]:
+            html += t.note(f"…and {len(issues) - 5} more row(s) with problems.")
+        return html, json.dumps(records[:5], indent=2, ensure_ascii=False, default=str)
+
+    records_check.click(
+        do_check_records, [records_file, records_mode], [records_result, records_preview]
+    )
+
+    def do_build_records(path, name_value, mode_value, description_value, train, validation,
+                         test, dedupe_value, shuffle_value, seed_value):
+        if not name_value or not name_value.strip():
+            return t.note("Give the dataset a name.", "warn"), datasets_table(), gr.update()
+        try:
+            records, _invalid, _issues = _load_records(path, mode_value)
+            options = BuildOptions(
+                mode=mode_value,
+                train_split=float(train),
+                validation_split=float(validation),
+                test_split=float(test),
+                shuffle=bool(shuffle_value),
+                seed=int(seed_value),
+                deduplicate=bool(dedupe_value),
+            )
+            record = build_from_records(
+                name_value.strip(), records, options, description=description_value or None
+            )
+        except StudioError as exc:
+            return t.error_message(exc), datasets_table(), gr.update()
+        except Exception as exc:  # noqa: BLE001
+            return t.error_message(exc), datasets_table(), gr.update()
+
+        stats = record["stats"]
+        html = t.note(
+            f"Imported <b>{record['name']}</b> — {t.fmt_number(record['rows'])} rows "
+            f"({t.fmt_number(record['train_rows'])} train / "
+            f"{t.fmt_number(record['validation_rows'])} val / "
+            f"{t.fmt_number(record['test_rows'])} test).", "good",
+        )
+        if stats.get("invalid_records"):
+            html += t.note(
+                f"{t.fmt_number(stats['invalid_records'])} row(s) were skipped as invalid.", "warn")
+        for warning in stats.get("warnings", [])[:4]:
+            html += t.note(warning, "warn")
+        return html, datasets_table(), gr.update(choices=dataset_choices())
+
+    records_build.click(
+        do_build_records,
+        [records_file, records_name, records_mode, records_description, train_split, val_split,
+         test_split, dedupe, shuffle, seed],
+        [records_result, table, preview_target],
     )
 
     def do_preview(dataset_id, split):
