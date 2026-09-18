@@ -1,0 +1,210 @@
+"""Teacher: gathering material, building a model, and teaching it for real.
+
+The training test runs actual PyTorch steps on a tiny model — if the lesson were
+simulated, the loss assertion would not hold.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+from pathlib import Path
+
+import pytest
+
+TMP_HOME = Path(tempfile.mkdtemp(prefix="teacher-tests-"))
+os.environ["TEACHER_HOME"] = str(TMP_HOME)
+
+from teacher import lessons, workspace  # noqa: E402
+from teacher.material import gather  # noqa: E402
+from teacher.workspace import TeacherError  # noqa: E402
+
+
+def corpus(repeats: int = 400) -> str:
+    subjects = ["the cat", "the dog", "a bird", "the fox"]
+    verbs = ["sat on", "jumped over", "ran past", "looked at"]
+    objects = ["the mat", "the fence", "the river", "the moon"]
+    return " ".join(
+        f"{s} {v} {o} ." for _ in range(repeats) for s in subjects for v in verbs for o in objects
+    )
+
+
+@pytest.fixture(scope="module")
+def material_dir(tmp_path_factory):
+    folder = tmp_path_factory.mktemp("material")
+    (folder / "lesson.txt").write_text(corpus(), encoding="utf-8")
+    (folder / "notes.md").write_text("# Notes\n\n" + corpus(20), encoding="utf-8")
+    (folder / "ignored.bin").write_bytes(b"\x00\x01\x02")
+    return folder
+
+
+# ------------------------------------------------------------------ material
+def test_gathers_a_folder(material_dir):
+    found = gather([str(material_dir)])
+    assert len(found.sources) == 2, "only readable file types are picked up"
+    assert found.characters > 10_000
+    assert "the cat" in found.text
+
+
+def test_gathers_a_single_file(material_dir):
+    found = gather([str(material_dir / "lesson.txt")])
+    assert len(found.sources) == 1
+
+
+def test_raw_text_is_accepted():
+    found = gather([], raw_text="hello there")
+    assert found.text == "hello there"
+    assert found.sources == ["(text given on the command line)"]
+
+
+def test_missing_paths_are_reported_not_fatal(material_dir):
+    found = gather([str(material_dir), "/no/such/place"])
+    assert found.characters > 0, "one bad path must not lose the good material"
+    assert any("no such file" in why for _path, why in found.skipped)
+
+
+def test_summary_counts_what_it_read(material_dir):
+    summary = gather([str(material_dir)]).summary()
+    assert "2 source(s)" in summary and "characters" in summary
+
+
+# -------------------------------------------------------------------- naming
+@pytest.mark.parametrize(
+    "given,expected",
+    [("My Model", "my-model"), ("  spaced  ", "spaced"), ("a/b\\c", "a-b-c"), ("UPPER", "upper")],
+)
+def test_names_become_safe_folder_names(given, expected):
+    assert workspace.slug(given) == expected
+
+
+def test_an_unusable_name_is_refused():
+    with pytest.raises(TeacherError):
+        workspace.slug("///")
+
+
+def test_asking_for_an_unknown_model_is_refused():
+    with pytest.raises(TeacherError) as excinfo:
+        workspace.get("never-made")
+    assert "teacher list" in str(excinfo.value)
+
+
+# ------------------------------------------------------------------- lessons
+def test_too_little_material_is_refused(material_dir):
+    model = workspace.get("too-small", must_exist=False)
+    with pytest.raises(TeacherError) as excinfo:
+        lessons.create(model, gather([], raw_text="tiny"), "tiny")
+    assert "too little" in str(excinfo.value)
+
+
+def test_unknown_size_is_refused(material_dir):
+    model = workspace.get("bad-size", must_exist=False)
+    with pytest.raises(TeacherError):
+        lessons.create(model, gather([str(material_dir)]), "enormous")
+
+
+@pytest.fixture(scope="module")
+def taught(material_dir):
+    """Build a model and teach it once — the fixture the rest depends on."""
+    model = workspace.get("pupil", must_exist=False)
+    built = lessons.create(model, gather([str(material_dir)]), "tiny", context=64)
+    lesson = lessons.teach(model, gather([str(material_dir)]), epochs=1.0, batch_size=8)
+    return model, built, lesson
+
+
+def test_building_writes_the_three_files(taught):
+    model, built, _lesson = taught
+    assert model.exists(), f"missing {model.missing()}"
+    assert built["parameters"] > 0
+    assert built["context"] == 64
+    assert (model.path / "model.safetensors").stat().st_size > 0
+
+
+def test_the_vocabulary_is_capped_by_how_much_text_there_is(taught):
+    _model, built, _lesson = taught
+    # 4096 is the preset's vocabulary; the corpus is far too small to support it.
+    assert built["vocab_size"] < 4096
+
+
+def test_teaching_actually_lowers_the_loss(taught):
+    import math
+
+    _model, built, lesson = taught
+    assert lesson["status"] == "completed"
+    assert lesson["steps"] > 0
+    assert lesson["final_loss"] is not None
+
+    # An untrained model sits near ln(vocab); one epoch must beat that clearly.
+    untrained = math.log(built["vocab_size"])
+    assert lesson["final_loss"] < untrained * 0.9, (
+        f"loss {lesson['final_loss']:.3f} is no better than an untrained model ({untrained:.3f})"
+    )
+
+
+def test_the_held_out_loss_is_measured(taught):
+    _model, _built, lesson = taught
+    assert lesson["held_out_loss"] is not None
+    assert lesson["perplexity"] > 1.0
+
+
+def test_the_lesson_is_recorded(taught):
+    model, _built, lesson = taught
+    history = model.history()
+    assert len(history["lessons"]) == 1
+    assert history["lessons"][0]["characters"] == lesson["characters"]
+    assert history["lessons"][0]["sources"]
+
+
+def test_teaching_again_keeps_the_earlier_record(taught, material_dir):
+    model, _built, _lesson = taught
+    before = len(model.history()["lessons"])
+    lessons.teach(model, gather([str(material_dir)]), epochs=1.0, batch_size=8)
+    after = model.history()["lessons"]
+    assert len(after) == before + 1, "a second lesson must be appended, not replace the first"
+    assert after[0]["at"] < after[-1]["at"]
+
+
+def test_the_previous_weights_are_kept_before_being_overwritten(taught):
+    model, _built, _lesson = taught
+    saved = sorted(p for p in model.checkpoints.iterdir() if p.is_dir())
+    assert saved, "the state before a lesson must be recoverable"
+    assert (saved[-1] / "model.safetensors").exists()
+
+
+def test_talking_produces_tokens(taught):
+    model, _built, _lesson = taught
+    text, stats = lessons.talk(model, "the cat", max_new_tokens=16, seed=1)
+    assert stats["generated"] > 0
+    assert stats["tokens_per_second"] > 0
+    assert isinstance(text, str)
+
+
+def test_a_seed_repeats_the_same_answer(taught):
+    model, _built, _lesson = taught
+    first, _ = lessons.talk(model, "the cat", max_new_tokens=16, seed=42)
+    second, _ = lessons.talk(model, "the cat", max_new_tokens=16, seed=42)
+    assert first == second
+
+
+# --------------------------------------------------------------------- pack
+def test_pack_copies_exactly_what_the_web_page_needs(taught, tmp_path):
+    model, _built, _lesson = taught
+    copied = model.pack(tmp_path / "out")
+    assert sorted(copied) == ["config.json", "model.safetensors", "tokenizer.json"]
+    for name in copied:
+        assert (tmp_path / "out" / name).stat().st_size > 0
+
+    config = json.loads((tmp_path / "out" / "config.json").read_text())
+    assert config["model_type"] == "ai_studio_transformer"
+
+
+def test_pack_refuses_an_incomplete_model(tmp_path):
+    empty = workspace.Model(name="hollow", path=tmp_path / "hollow")
+    empty.path.mkdir()
+    with pytest.raises(TeacherError):
+        empty.pack(tmp_path / "out")
+
+
+def test_listing_finds_the_models_it_made(taught):
+    names = {model.name for model in workspace.every()}
+    assert "pupil" in names
