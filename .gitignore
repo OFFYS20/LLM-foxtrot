@@ -15,9 +15,10 @@ out/
 .turbo/
 *.tsbuildinfo
 
-# ---- Foxtrot runtime data ----
-data/
-backend/data/
+# ---- Runtime data ----
+# Anchored: a bare "data/" also matched ai_studio/data/, which is source code.
+/backend/data/
+/data/
 *.db
 *.sqlite
 *.sqlite3
