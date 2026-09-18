@@ -1,0 +1,993 @@
+<title>Bench</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --ground: #e7ecef;
+    --surface: #fbfcfd;
+    --surface-sunk: #dfe6ea;
+    --ink: #131a20;
+    --ink-muted: #5c6b77;
+    --ink-faint: #8a98a3;
+    --line: #c7d2d9;
+    --line-soft: #dbe3e8;
+    --accent: #a85c32;
+    --accent-ink: #ffffff;
+    --accent-soft: #f3e2d7;
+    --ok: #2f6f4f;
+    --warn: #8a6216;
+    --bad: #9b3232;
+    --shadow: 0 1px 2px rgba(19, 26, 32, .07), 0 8px 24px -16px rgba(19, 26, 32, .3);
+    --radius: 10px;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sans: "Archivo", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0f151a;
+      --surface: #171f26;
+      --surface-sunk: #10171d;
+      --ink: #e4eaef;
+      --ink-muted: #93a1ad;
+      --ink-faint: #6b7883;
+      --line: #2b363f;
+      --line-soft: #222c34;
+      --accent: #d98a55;
+      --accent-ink: #1a1008;
+      --accent-soft: #2d2018;
+      --ok: #6fbf92;
+      --warn: #d4a441;
+      --bad: #e07878;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -16px rgba(0, 0, 0, .8);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #0f151a;
+    --surface: #171f26;
+    --surface-sunk: #10171d;
+    --ink: #e4eaef;
+    --ink-muted: #93a1ad;
+    --ink-faint: #6b7883;
+    --line: #2b363f;
+    --line-soft: #222c34;
+    --accent: #d98a55;
+    --accent-ink: #1a1008;
+    --accent-soft: #2d2018;
+    --ok: #6fbf92;
+    --warn: #d4a441;
+    --bad: #e07878;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -16px rgba(0, 0, 0, .8);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding-inline: 16px; padding-block: 24px 40px; }
+
+  /* ---------------------------------------------------------- masthead */
+  .masthead { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+  .brand { display: flex; align-items: baseline; gap: 10px; }
+  .brand h1 { font-size: 22px; font-weight: 700; letter-spacing: -.01em; margin: 0; }
+  .brand .tag { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); text-transform: uppercase; letter-spacing: .1em; }
+  .lede { color: var(--ink-muted); max-width: 62ch; margin: 6px 0 0; font-size: 13px; }
+
+  /* ------------------------------------------------------------ layout */
+  .bench { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 16px; align-items: start; }
+  @media (max-width: 900px) { .bench { grid-template-columns: 1fr; } }
+
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+  .panel + .panel { margin-top: 16px; }
+  .panel-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 10px 14px; border-bottom: 1px solid var(--line-soft);
+  }
+  .panel-head h2 { margin: 0; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .12em; color: var(--ink-muted); font-family: var(--mono); }
+  .panel-head .hint { font-size: 11.5px; color: var(--ink-faint); text-align: right; }
+  .panel-body { padding: 14px; }
+
+  /* ---------------------------------------------------------- load bay */
+  .bay {
+    border: 1.5px dashed var(--line); border-radius: 8px; background: var(--surface-sunk);
+    padding: 22px 16px; text-align: center; transition: border-color .15s, background .15s;
+  }
+  .bay.hot { border-color: var(--accent); background: var(--accent-soft); }
+  .bay p { margin: 6px 0 0; color: var(--ink-muted); font-size: 12.5px; }
+  .bay strong { display: block; font-size: 14px; color: var(--ink); }
+  .pick { color: var(--accent); text-decoration: underline; cursor: pointer; }
+
+  .filelist { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+  .filelist li { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11.5px; color: var(--ink-muted); }
+  .filelist .mark { width: 14px; text-align: center; font-weight: 600; }
+  .filelist .have { color: var(--ok); }
+  .filelist .want { color: var(--ink-faint); }
+
+  /* ------------------------------------------------------------- specs */
+  .specs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; background: var(--line-soft); border: 1px solid var(--line-soft); border-radius: 8px; overflow: hidden; margin: 0; }
+  .spec { background: var(--surface); padding: 8px 10px; }
+  .spec dt { font-size: 10px; text-transform: uppercase; letter-spacing: .09em; color: var(--ink-faint); font-family: var(--mono); }
+  .spec dd { margin: 2px 0 0; font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .spec.wide { grid-column: 1 / -1; }
+
+  /* ----------------------------------------------------------- controls */
+  .ctl { display: grid; gap: 12px; }
+  .ctl label { display: block; }
+  .ctl .row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .ctl .name { font-size: 11px; text-transform: uppercase; letter-spacing: .09em; color: var(--ink-muted); font-family: var(--mono); }
+  .ctl .val { font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; color: var(--ink); }
+  input[type="range"] { width: 100%; accent-color: var(--accent); margin: 4px 0 0; }
+
+  /* --------------------------------------------------------- transcript */
+  .thread { padding: 14px; display: flex; flex-direction: column; gap: 14px; min-height: 340px; max-height: 56vh; overflow-y: auto; }
+  .turn { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 12px; }
+  .turn .who { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .09em; color: var(--ink-faint); padding-top: 3px; }
+  .turn .said { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .turn.model .said { font-family: var(--mono); font-size: 13px; line-height: 1.65; }
+  .turn.model .said .seed { color: var(--ink-faint); }
+  .cursor { display: inline-block; width: 7px; height: 15px; background: var(--accent); vertical-align: -2px; animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { .cursor { animation: none; } }
+
+  .empty { color: var(--ink-faint); font-size: 13px; text-align: center; padding: 40px 12px; margin: 0; }
+
+  /* ------------------------------------------------------------- input */
+  .composer { display: flex; gap: 8px; padding: 12px 14px; border-top: 1px solid var(--line-soft); }
+  textarea {
+    flex: 1; min-width: 0; font-family: var(--mono); font-size: 13px; line-height: 1.5;
+    color: var(--ink); background: var(--surface-sunk);
+    border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; resize: vertical;
+  }
+  textarea:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button {
+    font-family: var(--sans); font-weight: 600; font-size: 13px; cursor: pointer;
+    border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+    padding: 9px 14px; transition: background .12s, border-color .12s;
+  }
+  button:hover:not(:disabled) { border-color: var(--ink-faint); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  button.primary:hover:not(:disabled) { filter: brightness(1.06); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.small { padding: 5px 10px; font-size: 12px; font-weight: 500; }
+
+  /* ------------------------------------------------------------ meters */
+  .meters { display: flex; flex-wrap: wrap; gap: 14px; padding: 10px 14px; border-top: 1px solid var(--line-soft); font-family: var(--mono); font-size: 11.5px; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+  .meters b { color: var(--ink); font-weight: 600; }
+
+  /* --------------------------------------------------------- candidates */
+  .cands { display: flex; flex-direction: column; gap: 5px; }
+  .cand { display: grid; grid-template-columns: minmax(58px, auto) 1fr minmax(44px, auto); gap: 8px; align-items: center; font-family: var(--mono); font-size: 11.5px; }
+  .cand .tok { background: var(--surface-sunk); border: 1px solid var(--line-soft); border-radius: 4px; padding: 1px 5px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+  .cand .bar { height: 6px; background: var(--surface-sunk); border-radius: 3px; overflow: hidden; }
+  .cand .bar i { display: block; height: 100%; background: var(--accent); }
+  .cand .pct { text-align: right; color: var(--ink-muted); }
+
+  /* ----------------------------------------------------------- notices */
+  .note { border-radius: 7px; padding: 9px 11px; font-size: 12.5px; border: 1px solid; margin-top: 12px; }
+  .note.info { background: var(--surface-sunk); border-color: var(--line-soft); color: var(--ink-muted); }
+  .note.bad { background: color-mix(in srgb, var(--bad) 9%, var(--surface)); border-color: color-mix(in srgb, var(--bad) 35%, var(--line)); color: var(--ink); }
+  .note.warn { background: color-mix(in srgb, var(--warn) 11%, var(--surface)); border-color: color-mix(in srgb, var(--warn) 35%, var(--line)); color: var(--ink); }
+
+  .foot { margin-top: 22px; color: var(--ink-faint); font-size: 12px; max-width: 74ch; }
+  .foot code { font-family: var(--mono); font-size: 11.5px; background: var(--surface-sunk); border: 1px solid var(--line-soft); border-radius: 4px; padding: 0 4px; }
+  .hidden { display: none !important; }
+</style>
+
+<div class="wrap">
+  <header class="masthead">
+    <div>
+      <div class="brand">
+        <h1>Bench</h1>
+        <span class="tag">local inference</span>
+      </div>
+      <p class="lede">
+        Drop in a model you trained yourself and talk to it. The weights are read, run and sampled
+        here in your browser — nothing is uploaded anywhere.
+      </p>
+    </div>
+    <button id="theme" class="small" type="button">Dark</button>
+  </header>
+
+  <div class="bench">
+    <div>
+      <section class="panel">
+        <div class="panel-head"><h2>Model</h2><button id="eject" class="small hidden" type="button">Eject</button></div>
+        <div class="panel-body">
+          <div id="bay" class="bay">
+            <strong>Drop a checkpoint folder</strong>
+            <p>or <label class="pick">choose files<input id="picker" type="file" multiple class="hidden" accept=".safetensors,.json"></label></p>
+            <ul class="filelist">
+              <li><span class="mark want" data-for="weights">○</span> model.safetensors</li>
+              <li><span class="mark want" data-for="config">○</span> config.json</li>
+              <li><span class="mark want" data-for="tokenizer">○</span> tokenizer.json</li>
+            </ul>
+          </div>
+          <div id="loadnote"></div>
+          <dl id="specs" class="specs hidden"></dl>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><h2>Sampling</h2></div>
+        <div class="panel-body ctl">
+          <label>
+            <span class="row"><span class="name">Temperature</span><span class="val" id="tempV">0.80</span></span>
+            <input id="temp" type="range" min="0" max="2" step="0.05" value="0.8">
+          </label>
+          <label>
+            <span class="row"><span class="name">Top-p</span><span class="val" id="toppV">0.95</span></span>
+            <input id="topp" type="range" min="0.05" max="1" step="0.01" value="0.95">
+          </label>
+          <label>
+            <span class="row"><span class="name">Top-k</span><span class="val" id="topkV">40</span></span>
+            <input id="topk" type="range" min="0" max="200" step="1" value="40">
+          </label>
+          <label>
+            <span class="row"><span class="name">Repetition penalty</span><span class="val" id="repV">1.10</span></span>
+            <input id="rep" type="range" min="1" max="2" step="0.01" value="1.1">
+          </label>
+          <label>
+            <span class="row"><span class="name">Max new tokens</span><span class="val" id="maxV">96</span></span>
+            <input id="max" type="range" min="8" max="512" step="8" value="96">
+          </label>
+        </div>
+      </section>
+
+    </div>
+
+    <div>
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Conversation</h2>
+        <button id="clear" class="small" type="button">Clear</button>
+      </div>
+      <div id="thread" class="thread">
+        <p class="empty">Load a model, then write something for it to continue.</p>
+      </div>
+      <div class="composer">
+        <textarea id="prompt" rows="2" placeholder="the cat" disabled></textarea>
+        <button id="send" class="primary" type="button" disabled>Send</button>
+        <button id="stop" class="hidden" type="button">Stop</button>
+      </div>
+      <div class="meters">
+        <span>prompt <b id="mPrompt">—</b></span>
+        <span>generated <b id="mGen">—</b></span>
+        <span>speed <b id="mSpeed">—</b></span>
+        <span>context <b id="mCtx">—</b></span>
+        <span>stopped by <b id="mStop">—</b></span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Next-token candidates</h2>
+        <span class="hint">what it weighed up for the token just written</span>
+      </div>
+      <div class="panel-body">
+        <div id="cands" class="cands"><p class="empty" style="padding:8px 0">Fills in while the model writes.</p></div>
+      </div>
+    </section>
+    </div>
+  </div>
+
+  <p class="foot">
+    Bench runs the <code>ai_studio_transformer</code> architecture — RMSNorm or LayerNorm, SwiGLU/GELU/SiLU/ReLU,
+    RoPE or learned positions, grouped-query attention — on the CPU in plain JavaScript, so it suits the small
+    models you can train at home rather than multi-billion-parameter ones. It prepends the
+    <code>&lt;s&gt;</code> token and stops at <code>&lt;/s&gt;</code>, so a continuation runs on from your text
+    instead of starting a fresh document.
+  </p>
+</div>
+
+<script>
+"use strict";
+
+/* ========================================================== safetensors */
+async function readSafetensors(file) {
+  const headLen = Number(new DataView(await file.slice(0, 8).arrayBuffer()).getBigUint64(0, true));
+  if (!Number.isFinite(headLen) || headLen <= 0 || headLen > 100e6) {
+    throw new Error("This does not look like a safetensors file.");
+  }
+  const header = JSON.parse(new TextDecoder().decode(await file.slice(8, 8 + headLen).arrayBuffer()));
+  const body = await file.slice(8 + headLen).arrayBuffer();
+
+  const tensors = {};
+  let count = 0;
+  for (const [name, spec] of Object.entries(header)) {
+    if (name === "__metadata__") continue;
+    if (spec.dtype !== "F32") {
+      throw new Error('Tensor "' + name + '" is ' + spec.dtype + '; Bench reads F32 weights. Export the model in fp32.');
+    }
+    const [start, end] = spec.data_offsets;
+    tensors[name] = { shape: spec.shape, data: new Float32Array(body, start, (end - start) / 4) };
+    count += 1;
+  }
+  return { tensors, count };
+}
+
+/* ============================================================ tokenizer */
+function byteMaps() {
+  const bs = [];
+  for (let b = 33; b <= 126; b++) bs.push(b);
+  for (let b = 161; b <= 172; b++) bs.push(b);
+  for (let b = 174; b <= 255; b++) bs.push(b);
+  const cs = bs.slice();
+  let n = 0;
+  for (let b = 0; b < 256; b++) {
+    if (bs.indexOf(b) === -1) { bs.push(b); cs.push(256 + n); n += 1; }
+  }
+  const enc = new Map(), dec = new Map();
+  for (let i = 0; i < bs.length; i++) {
+    const ch = String.fromCodePoint(cs[i]);
+    enc.set(bs[i], ch);
+    dec.set(ch, bs[i]);
+  }
+  return { enc, dec };
+}
+
+const SPLIT = /'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+/gu;
+const JOIN = " ";
+
+class Tokenizer {
+  constructor(spec) {
+    const model = spec.model || {};
+    if (model.type !== "BPE") {
+      throw new Error('Bench reads byte-level BPE tokenizers; this one is "' + model.type + '".');
+    }
+
+    this.vocab = model.vocab || {};
+    this.inverse = [];
+    for (const tok of Object.keys(this.vocab)) this.inverse[this.vocab[tok]] = tok;
+
+    this.ranks = new Map();
+    const merges = model.merges || [];
+    for (let i = 0; i < merges.length; i++) {
+      const pair = Array.isArray(merges[i]) ? merges[i] : String(merges[i]).split(" ");
+      this.ranks.set(pair[0] + JOIN + pair[1], i);
+    }
+    this.mergeCount = this.ranks.size;
+
+    const maps = byteMaps();
+    this.byteEnc = maps.enc;
+    this.byteDec = maps.dec;
+
+    const pre = spec.pre_tokenizer || {};
+    this.addPrefixSpace = pre.add_prefix_space !== false;
+    this.useRegex = pre.use_regex !== false;
+    this.nfkc = JSON.stringify(spec.normalizer || {}).indexOf("NFKC") !== -1;
+
+    const special = {};
+    for (const added of spec.added_tokens || []) special[added.content] = added.id;
+    this.bos = special["<s>"] != null ? special["<s>"] : null;
+    this.eos = special["</s>"] != null ? special["</s>"] : null;
+    this.unk = special["<unk>"] != null ? special["<unk>"]
+      : (model.unk_token != null ? this.vocab[model.unk_token] : null);
+    this.specialIds = new Set(Object.keys(special).map((k) => special[k]));
+    this.size = Object.keys(this.vocab).length;
+  }
+
+  bpe(word) {
+    const parts = Array.from(word);
+    if (parts.length < 2) return parts;
+    for (;;) {
+      let best = Infinity, at = -1;
+      for (let i = 0; i < parts.length - 1; i++) {
+        const rank = this.ranks.get(parts[i] + JOIN + parts[i + 1]);
+        if (rank !== undefined && rank < best) { best = rank; at = i; }
+      }
+      if (at < 0) return parts;
+      parts.splice(at, 2, parts[at] + parts[at + 1]);
+    }
+  }
+
+  encode(text, options) {
+    const specials = !options || options.specials !== false;
+    let s = this.nfkc ? text.normalize("NFKC") : text;
+    if (this.addPrefixSpace && s.charAt(0) !== " ") s = " " + s;
+
+    const pieces = this.useRegex ? (s.match(SPLIT) || []) : (s ? [s] : []);
+    const ids = [];
+    if (specials && this.bos != null) ids.push(this.bos);
+
+    const utf8 = new TextEncoder();
+    for (const piece of pieces) {
+      let mapped = "";
+      for (const byte of utf8.encode(piece)) mapped += this.byteEnc.get(byte);
+      for (const token of this.bpe(mapped)) {
+        const id = this.vocab[token];
+        if (id !== undefined) ids.push(id);
+        else if (this.unk != null) ids.push(this.unk);
+      }
+    }
+    return ids;
+  }
+
+  /* Byte-level tokens only become characters once their bytes are complete,
+     so always decode the whole run rather than token by token. */
+  decode(ids, options) {
+    const skipSpecial = !options || options.skipSpecial !== false;
+    const bytes = [];
+    for (const id of ids) {
+      if (skipSpecial && this.specialIds.has(id)) continue;
+      const token = this.inverse[id];
+      if (token === undefined) continue;
+      for (const ch of token) {
+        const byte = this.byteDec.get(ch);
+        bytes.push(byte === undefined ? 0xef : byte);
+      }
+    }
+    return new TextDecoder("utf-8", { fatal: false }).decode(new Uint8Array(bytes));
+  }
+}
+
+/* ================================================================ model */
+const SUPPORTED = {
+  norm: ["rmsnorm", "layernorm"],
+  activation: ["swiglu", "gelu", "silu", "relu"],
+  position: ["rope", "learned", "none"],
+};
+
+class Model {
+  constructor(config, tensors) {
+    this.cfg = config;
+    this.t = tensors;
+
+    const problems = [];
+    if (SUPPORTED.norm.indexOf(config.norm_type) === -1) problems.push('norm_type "' + config.norm_type + '"');
+    if (SUPPORTED.activation.indexOf(config.activation) === -1) problems.push('activation "' + config.activation + '"');
+    if (SUPPORTED.position.indexOf(config.position_embedding) === -1) problems.push('position_embedding "' + config.position_embedding + '"');
+    if (problems.length) {
+      throw new Error("Bench cannot run " + problems.join(" or ") + " yet.");
+    }
+
+    this.heads = config.num_heads;
+    this.kvHeads = config.num_kv_heads || config.num_heads;
+    this.headDim = Math.floor(config.hidden_size / config.num_heads);
+    this.repeats = Math.floor(this.heads / this.kvHeads);
+    this.eps = config.norm_eps != null ? config.norm_eps : 1e-5;
+    this.layers = config.num_layers;
+    this.dim = config.hidden_size;
+
+    const missing = [];
+    const need = (name) => { if (!this.t[name]) missing.push(name); };
+    need("embed_tokens.weight");
+    for (let l = 0; l < this.layers; l++) {
+      const keys = ["attention.q_proj", "attention.k_proj", "attention.v_proj", "attention.o_proj",
+                    "mlp.up_proj", "mlp.down_proj", "input_norm", "post_attention_norm"];
+      for (const k of keys) need("layers." + l + "." + k + ".weight");
+      if (config.activation === "swiglu") need("layers." + l + ".mlp.gate_proj.weight");
+    }
+    need("norm.weight");
+    if (missing.length) {
+      throw new Error("The weight file is missing " + missing.length + " tensor(s), starting with " + missing[0] + ".");
+    }
+
+    this.lmHead = this.t["lm_head.weight"] || this.t["embed_tokens.weight"];
+
+    if (config.position_embedding === "rope") {
+      const half = this.headDim >> 1;
+      const positions = config.max_position_embeddings;
+      const scaling = Math.max(config.rope_scaling || 1, 1e-6);
+      const theta = config.rope_theta || 10000;
+      this.cos = new Float32Array(positions * this.headDim);
+      this.sin = new Float32Array(positions * this.headDim);
+      for (let p = 0; p < positions; p++) {
+        for (let i = 0; i < half; i++) {
+          const freq = (p / scaling) / Math.pow(theta, (2 * i) / this.headDim);
+          const c = Math.cos(freq), s = Math.sin(freq);
+          this.cos[p * this.headDim + i] = c;
+          this.cos[p * this.headDim + i + half] = c;
+          this.sin[p * this.headDim + i] = s;
+          this.sin[p * this.headDim + i + half] = s;
+        }
+      }
+    }
+  }
+
+  get params() {
+    let total = 0;
+    for (const name of Object.keys(this.t)) total += this.t[name].data.length;
+    if (this.cfg.tie_word_embeddings && this.t["lm_head.weight"]) {
+      total -= this.t["lm_head.weight"].data.length;
+    }
+    return total;
+  }
+
+  newCache() {
+    const cache = [];
+    for (let l = 0; l < this.layers; l++) cache.push({ k: [], v: [] });
+    return cache;
+  }
+
+  /* Weights are [out, in] row-major, so y = x @ Wᵀ. */
+  static matvec(W, x, outDim, inDim, bias) {
+    const y = new Float32Array(outDim);
+    for (let o = 0; o < outDim; o++) {
+      const base = o * inDim;
+      let sum = bias ? bias[o] : 0;
+      for (let i = 0; i < inDim; i++) sum += W[base + i] * x[i];
+      y[o] = sum;
+    }
+    return y;
+  }
+
+  norm(x, weight, bias) {
+    const n = x.length, out = new Float32Array(n);
+    if (this.cfg.norm_type === "rmsnorm") {
+      let sq = 0;
+      for (let i = 0; i < n; i++) sq += x[i] * x[i];
+      const scale = 1 / Math.sqrt(sq / n + this.eps);
+      for (let i = 0; i < n; i++) out[i] = x[i] * scale * weight[i];
+      return out;
+    }
+    let mean = 0;
+    for (let i = 0; i < n; i++) mean += x[i];
+    mean /= n;
+    let variance = 0;
+    for (let i = 0; i < n; i++) { const d = x[i] - mean; variance += d * d; }
+    const scale = 1 / Math.sqrt(variance / n + this.eps);
+    for (let i = 0; i < n; i++) out[i] = (x[i] - mean) * scale * weight[i] + (bias ? bias[i] : 0);
+    return out;
+  }
+
+  rope(vec, heads, pos) {
+    const half = this.headDim >> 1, base = pos * this.headDim;
+    for (let h = 0; h < heads; h++) {
+      const off = h * this.headDim;
+      for (let i = 0; i < half; i++) {
+        const a = vec[off + i], b = vec[off + i + half];
+        const c = this.cos[base + i], s = this.sin[base + i];
+        vec[off + i] = a * c - b * s;
+        vec[off + i + half] = b * c + a * s;
+      }
+    }
+  }
+
+  /* One token through the whole stack; returns logits over the vocabulary. */
+  forward(tokenId, pos, cache) {
+    const dim = this.dim, T = this.t;
+    const embed = T["embed_tokens.weight"].data;
+    const x = embed.slice(tokenId * dim, tokenId * dim + dim);
+
+    if (this.cfg.position_embedding === "learned" && T["position_embeddings.weight"]) {
+      const pe = T["position_embeddings.weight"].data;
+      for (let i = 0; i < dim; i++) x[i] += pe[pos * dim + i];
+    }
+
+    const kvDim = this.kvHeads * this.headDim;
+    const qDim = this.heads * this.headDim;
+
+    for (let l = 0; l < this.layers; l++) {
+      const p = "layers." + l + ".";
+      const bias = (key) => (T[p + key + ".bias"] ? T[p + key + ".bias"].data : null);
+      const h = this.norm(x, T[p + "input_norm.weight"].data, bias("input_norm"));
+
+      const q = Model.matvec(T[p + "attention.q_proj.weight"].data, h, qDim, dim, bias("attention.q_proj"));
+      const k = Model.matvec(T[p + "attention.k_proj.weight"].data, h, kvDim, dim, bias("attention.k_proj"));
+      const v = Model.matvec(T[p + "attention.v_proj.weight"].data, h, kvDim, dim, bias("attention.v_proj"));
+
+      if (this.cos) { this.rope(q, this.heads, pos); this.rope(k, this.kvHeads, pos); }
+
+      cache[l].k.push(k);
+      cache[l].v.push(v);
+      const past = cache[l].k.length;
+
+      const attn = new Float32Array(qDim);
+      const scale = 1 / Math.sqrt(this.headDim);
+      const scores = new Float32Array(past);
+
+      for (let head = 0; head < this.heads; head++) {
+        const kvHead = Math.floor(head / this.repeats);
+        const qOff = head * this.headDim, kOff = kvHead * this.headDim;
+
+        let top = -Infinity;
+        for (let t = 0; t < past; t++) {
+          const kt = cache[l].k[t];
+          let dot = 0;
+          for (let i = 0; i < this.headDim; i++) dot += q[qOff + i] * kt[kOff + i];
+          const s = dot * scale;
+          scores[t] = s;
+          if (s > top) top = s;
+        }
+        let sum = 0;
+        for (let t = 0; t < past; t++) { scores[t] = Math.exp(scores[t] - top); sum += scores[t]; }
+        for (let t = 0; t < past; t++) {
+          const w = scores[t] / sum, vt = cache[l].v[t];
+          for (let i = 0; i < this.headDim; i++) attn[qOff + i] += w * vt[kOff + i];
+        }
+      }
+
+      const projected = Model.matvec(T[p + "attention.o_proj.weight"].data, attn, dim, qDim, bias("attention.o_proj"));
+      for (let i = 0; i < dim; i++) x[i] += projected[i];
+
+      const h2 = this.norm(x, T[p + "post_attention_norm.weight"].data, bias("post_attention_norm"));
+      const inter = T[p + "mlp.up_proj.weight"].shape[0];
+      const up = Model.matvec(T[p + "mlp.up_proj.weight"].data, h2, inter, dim, bias("mlp.up_proj"));
+      const hidden = new Float32Array(inter);
+
+      if (this.cfg.activation === "swiglu") {
+        const gate = Model.matvec(T[p + "mlp.gate_proj.weight"].data, h2, inter, dim, bias("mlp.gate_proj"));
+        for (let i = 0; i < inter; i++) hidden[i] = (gate[i] / (1 + Math.exp(-gate[i]))) * up[i];
+      } else if (this.cfg.activation === "gelu") {
+        for (let i = 0; i < inter; i++) {
+          const u = up[i];
+          hidden[i] = 0.5 * u * (1 + Math.tanh(0.7978845608028654 * (u + 0.044715 * u * u * u)));
+        }
+      } else if (this.cfg.activation === "silu") {
+        for (let i = 0; i < inter; i++) hidden[i] = up[i] / (1 + Math.exp(-up[i]));
+      } else {
+        for (let i = 0; i < inter; i++) hidden[i] = up[i] > 0 ? up[i] : 0;
+      }
+
+      const down = Model.matvec(T[p + "mlp.down_proj.weight"].data, hidden, dim, inter, bias("mlp.down_proj"));
+      for (let i = 0; i < dim; i++) x[i] += down[i];
+    }
+
+    const finalBias = T["norm.bias"] ? T["norm.bias"].data : null;
+    const final = this.norm(x, T["norm.weight"].data, finalBias);
+    return Model.matvec(this.lmHead.data, final, this.cfg.vocab_size, dim, null);
+  }
+}
+
+/* ============================================================= sampling */
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function softmaxTop(scores, n) {
+  let top = -Infinity;
+  for (let i = 0; i < scores.length; i++) if (scores[i] > top) top = scores[i];
+  let sum = 0;
+  const exp = new Float64Array(scores.length);
+  for (let i = 0; i < scores.length; i++) { exp[i] = Math.exp(scores[i] - top); sum += exp[i]; }
+  const order = [];
+  for (let i = 0; i < scores.length; i++) order.push(i);
+  order.sort((a, b) => scores[b] - scores[a]);
+  return order.slice(0, n).map((id) => ({ id: id, p: exp[id] / sum }));
+}
+
+function sample(logits, opts, history, rng) {
+  const scores = Float32Array.from(logits);
+
+  if (opts.repetition > 1) {
+    const seen = new Set(history);
+    for (const id of seen) {
+      scores[id] = scores[id] > 0 ? scores[id] / opts.repetition : scores[id] * opts.repetition;
+    }
+  }
+
+  if (opts.temperature <= 0.0001) {
+    let best = 0;
+    for (let i = 1; i < scores.length; i++) if (scores[i] > scores[best]) best = i;
+    return { id: best, top: softmaxTop(scores, 5) };
+  }
+
+  for (let i = 0; i < scores.length; i++) scores[i] /= opts.temperature;
+
+  let order = [];
+  for (let i = 0; i < scores.length; i++) order.push(i);
+  order.sort((a, b) => scores[b] - scores[a]);
+  if (opts.topK > 0) order = order.slice(0, opts.topK);
+
+  let top = -Infinity;
+  for (const i of order) if (scores[i] > top) top = scores[i];
+  let sum = 0;
+  const probs = order.map((i) => { const p = Math.exp(scores[i] - top); sum += p; return p; });
+  for (let i = 0; i < probs.length; i++) probs[i] /= sum;
+
+  let keep = order.length;
+  if (opts.topP < 1) {
+    let acc = 0;
+    for (let i = 0; i < probs.length; i++) {
+      acc += probs[i];
+      if (acc >= opts.topP) { keep = i + 1; break; }
+    }
+  }
+
+  let total = 0;
+  for (let i = 0; i < keep; i++) total += probs[i];
+  let roll = rng() * total;
+  let chosen = order[0];
+  for (let i = 0; i < keep; i++) { roll -= probs[i]; if (roll <= 0) { chosen = order[i]; break; } }
+
+  const shown = [];
+  for (let i = 0; i < Math.min(5, order.length); i++) shown.push({ id: order[i], p: probs[i] });
+  return { id: chosen, top: shown };
+}
+
+/* =================================================================== UI */
+const $ = (id) => document.getElementById(id);
+const state = { files: {}, model: null, tokenizer: null, config: null, running: false, cancel: false };
+
+const themeBtn = $("theme");
+function currentTheme() {
+  const stamped = document.documentElement.getAttribute("data-theme");
+  if (stamped) return stamped;
+  return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+function paintThemeButton() { themeBtn.textContent = currentTheme() === "dark" ? "Light" : "Dark"; }
+themeBtn.addEventListener("click", () => {
+  document.documentElement.setAttribute("data-theme", currentTheme() === "dark" ? "light" : "dark");
+  paintThemeButton();
+});
+paintThemeButton();
+
+/* ------------------------------------------------------- file intake */
+const bay = $("bay");
+["dragenter", "dragover"].forEach((ev) =>
+  bay.addEventListener(ev, (e) => { e.preventDefault(); bay.classList.add("hot"); }));
+["dragleave", "drop"].forEach((ev) =>
+  bay.addEventListener(ev, (e) => { e.preventDefault(); bay.classList.remove("hot"); }));
+
+bay.addEventListener("drop", async (e) => {
+  const items = Array.from(e.dataTransfer.items || []);
+  const found = [];
+  const walk = async (entry) => {
+    if (!entry) return;
+    if (entry.isFile) {
+      found.push(await new Promise((res) => entry.file(res)));
+    } else if (entry.isDirectory) {
+      const entries = await new Promise((res) => entry.createReader().readEntries(res));
+      for (const child of entries) await walk(child);
+    }
+  };
+  const roots = items.map((i) => (i.webkitGetAsEntry ? i.webkitGetAsEntry() : null)).filter(Boolean);
+  if (roots.length) { for (const root of roots) await walk(root); }
+  else { found.push.apply(found, Array.from(e.dataTransfer.files || [])); }
+  intake(found);
+});
+$("picker").addEventListener("change", (e) => intake(Array.from(e.target.files || [])));
+
+function intake(files) {
+  for (const file of files) {
+    const name = file.name.toLowerCase();
+    if (name.endsWith(".safetensors")) state.files.weights = file;
+    else if (name === "config.json") state.files.config = file;
+    else if (name === "tokenizer.json") state.files.tokenizer = file;
+  }
+  for (const key of ["weights", "config", "tokenizer"]) {
+    const mark = document.querySelector('[data-for="' + key + '"]');
+    const have = Boolean(state.files[key]);
+    mark.textContent = have ? "●" : "○";
+    mark.className = "mark " + (have ? "have" : "want");
+  }
+  if (state.files.weights && state.files.config && state.files.tokenizer) load();
+  else note("info", "Bench needs all three files: the weights, the architecture and the tokenizer.");
+}
+
+function note(kind, html) { $("loadnote").innerHTML = '<div class="note ' + kind + '">' + html + "</div>"; }
+function clearNote() { $("loadnote").innerHTML = ""; }
+
+async function load() {
+  note("info", "Reading weights…");
+  try {
+    const config = JSON.parse(await state.files.config.text());
+    const tokSpec = JSON.parse(await state.files.tokenizer.text());
+    const read = await readSafetensors(state.files.weights);
+    const tokenizer = new Tokenizer(tokSpec);
+    const model = new Model(config, read.tensors);
+
+    if (tokenizer.size !== config.vocab_size) {
+      note("warn", "The tokenizer holds " + tokenizer.size.toLocaleString() + " tokens but the model expects " +
+        config.vocab_size.toLocaleString() + ". These files look like they came from different runs, so the output will be nonsense.");
+    } else {
+      clearNote();
+    }
+
+    state.model = model;
+    state.tokenizer = tokenizer;
+    state.config = config;
+    showSpecs(config, model, tokenizer, read.count);
+    $("prompt").disabled = false;
+    $("send").disabled = false;
+    $("eject").classList.remove("hidden");
+    $("prompt").focus();
+  } catch (err) {
+    state.model = null;
+    note("bad", "<b>Could not load this model.</b><br>" + escapeHtml(err.message));
+  }
+}
+
+function showSpecs(config, model, tokenizer, tensorCount) {
+  const kv = model.kvHeads !== model.heads ? config.num_heads + " / " + model.kvHeads + " kv" : String(config.num_heads);
+  const rows = [
+    ["Parameters", fmt(model.params)],
+    ["Tensors", tensorCount.toLocaleString()],
+    ["Layers", config.num_layers],
+    ["Hidden size", config.hidden_size],
+    ["Heads", kv],
+    ["Head dim", model.headDim],
+    ["Context", config.max_position_embeddings.toLocaleString()],
+    ["Vocabulary", tokenizer.size.toLocaleString()],
+    ["Activation", config.activation],
+    ["Normalisation", config.norm_type],
+    ["Positions", config.position_embedding],
+    ["Merges", tokenizer.mergeCount.toLocaleString()],
+  ];
+  const tied = config.tie_word_embeddings ? "yes — the embedding is also the output head" : "no";
+  $("specs").innerHTML =
+    rows.map((r) => '<div class="spec"><dt>' + r[0] + "</dt><dd>" + r[1] + "</dd></div>").join("") +
+    '<div class="spec wide"><dt>Weights tied</dt><dd>' + tied + "</dd></div>";
+  $("specs").classList.remove("hidden");
+  bay.classList.add("hidden");
+}
+
+$("eject").addEventListener("click", () => {
+  state.files = {}; state.model = null; state.tokenizer = null; state.config = null;
+  $("specs").classList.add("hidden");
+  bay.classList.remove("hidden");
+  $("eject").classList.add("hidden");
+  $("prompt").disabled = true;
+  $("send").disabled = true;
+  document.querySelectorAll("[data-for]").forEach((m) => { m.textContent = "○"; m.className = "mark want"; });
+  clearNote();
+});
+
+/* ------------------------------------------------------------- knobs */
+[["temp", "tempV", 2], ["topp", "toppV", 2], ["topk", "topkV", 0], ["rep", "repV", 2], ["max", "maxV", 0]]
+  .forEach((knob) => {
+    const el = $(knob[0]);
+    const paint = () => { $(knob[1]).textContent = Number(el.value).toFixed(knob[2]); };
+    el.addEventListener("input", paint);
+    paint();
+  });
+
+/* ------------------------------------------------------- conversation */
+const thread = $("thread");
+function addTurn(who, text, cssClass) {
+  if (thread.querySelector(".empty")) thread.innerHTML = "";
+  const turn = document.createElement("div");
+  turn.className = "turn " + cssClass;
+  const label = document.createElement("div");
+  label.className = "who";
+  label.textContent = who;
+  const said = document.createElement("div");
+  said.className = "said";
+  said.textContent = text;
+  turn.appendChild(label);
+  turn.appendChild(said);
+  thread.appendChild(turn);
+  thread.scrollTop = thread.scrollHeight;
+  return said;
+}
+
+$("clear").addEventListener("click", () => {
+  thread.innerHTML = '<p class="empty">Load a model, then write something for it to continue.</p>';
+  $("cands").innerHTML = '<p class="empty" style="padding:8px 0">Fills in while the model writes.</p>';
+  ["mPrompt", "mGen", "mSpeed", "mCtx", "mStop"].forEach((id) => { $(id).textContent = "—"; });
+});
+
+$("stop").addEventListener("click", () => { state.cancel = true; });
+$("prompt").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("send").click(); }
+});
+$("send").addEventListener("click", run);
+
+async function run() {
+  if (state.running || !state.model) return;
+  const text = $("prompt").value.trim();
+  if (!text) return;
+
+  state.running = true;
+  state.cancel = false;
+  $("send").disabled = true;
+  $("prompt").value = "";
+  $("stop").classList.remove("hidden");
+
+  const model = state.model, tokenizer = state.tokenizer, config = state.config;
+  const opts = {
+    temperature: Number($("temp").value),
+    topP: Number($("topp").value),
+    topK: Number($("topk").value),
+    repetition: Number($("rep").value),
+    maxNew: Number($("max").value),
+  };
+
+  addTurn("you", text, "you");
+  const said = addTurn("model", "", "model");
+  const seed = document.createElement("span");
+  seed.className = "seed";
+  seed.textContent = text;
+  const grown = document.createElement("span");
+  const cursor = document.createElement("span");
+  cursor.className = "cursor";
+  said.appendChild(seed);
+  said.appendChild(grown);
+  said.appendChild(cursor);
+
+  const ids = tokenizer.encode(text);
+  const limit = config.max_position_embeddings;
+  const cache = model.newCache();
+  const produced = [];
+  const history = ids.slice();
+  const rng = mulberry32((Math.random() * 4294967296) >>> 0);
+
+  $("mPrompt").textContent = ids.length + " tok";
+  $("mGen").textContent = "0 tok";
+  $("mCtx").textContent = Math.min(ids.length, limit) + " / " + limit;
+
+  let stopReason = "length";
+  let logits = null;
+  let position = 0;
+
+  for (let i = 0; i < ids.length && position < limit; i++) {
+    logits = model.forward(ids[i], position, cache);
+    position += 1;
+  }
+
+  const started = performance.now();
+  if (logits) {
+    for (let step = 0; step < opts.maxNew; step++) {
+      if (state.cancel) { stopReason = "you"; break; }
+      if (position >= limit) { stopReason = "context full"; break; }
+
+      const picked = sample(logits, opts, history, rng);
+      if (picked.id === tokenizer.eos) { stopReason = "end token"; break; }
+
+      produced.push(picked.id);
+      history.push(picked.id);
+      grown.textContent = tokenizer.decode(produced);
+      paintCandidates(picked.top, tokenizer);
+
+      const elapsed = (performance.now() - started) / 1000;
+      $("mGen").textContent = produced.length + " tok";
+      $("mSpeed").textContent = (produced.length / Math.max(elapsed, 1e-6)).toFixed(1) + " tok/s";
+      $("mCtx").textContent = (position + 1) + " / " + limit;
+      thread.scrollTop = thread.scrollHeight;
+
+      logits = model.forward(picked.id, position, cache);
+      position += 1;
+
+      if (step % 4 === 3) await new Promise((r) => setTimeout(r, 0));
+    }
+  } else {
+    stopReason = "empty prompt";
+  }
+
+  cursor.remove();
+  if (!produced.length && stopReason !== "you") {
+    grown.textContent = "  (nothing was produced before it stopped)";
+  }
+  $("mStop").textContent = stopReason;
+  $("stop").classList.add("hidden");
+  $("send").disabled = false;
+  state.running = false;
+  $("prompt").focus();
+}
+
+function paintCandidates(top, tokenizer) {
+  $("cands").innerHTML = top.map((c) => {
+    const raw = tokenizer.decode([c.id], { skipSpecial: false }) || tokenizer.inverse[c.id] || "?";
+    const shown = raw.replace(/\n/g, "\\n") || "·";
+    return '<div class="cand">' +
+      '<span class="tok">' + escapeHtml(shown) + "</span>" +
+      '<span class="bar"><i style="width:' + (c.p * 100).toFixed(1) + '%"></i></span>' +
+      '<span class="pct">' + (c.p * 100).toFixed(1) + "%</span>" +
+      "</div>";
+  }).join("");
+}
+
+function fmt(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
+  return String(n);
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+</script>

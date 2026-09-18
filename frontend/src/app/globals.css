@@ -1,0 +1,98 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+
+    --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono", Menlo,
+      Consolas, "Liberation Mono", monospace;
+
+    /* Surfaces */
+    --base: 240 6% 4%;          /* page plane   #0a0a0b */
+    --panel: 240 5% 7%;         /* card surface #111113 */
+    --elevated: 240 5% 10%;
+    --overlay: 240 6% 8%;
+
+    --border: 240 5% 15%;
+    --border-strong: 240 5% 22%;
+    --input: 240 5% 12%;
+    --ring: 213 77% 56%;
+
+    /* Ink */
+    --ink: 0 0% 98%;
+    --ink-secondary: 60 5% 74%;
+    --ink-muted: 45 3% 52%;
+
+    /* Accent */
+    --accent: 213 77% 56%;
+    --accent-foreground: 0 0% 100%;
+    --accent-muted: 213 60% 22%;
+
+    /* Chart chrome */
+    --chart-grid: 240 4% 17%;
+    --chart-axis: 240 4% 22%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-base text-ink antialiased;
+    font-family: var(--font-sans);
+    font-feature-settings: "cv02", "cv03", "cv04";
+  }
+
+  ::selection {
+    background: hsl(var(--accent) / 0.35);
+  }
+}
+
+@layer components {
+  .panel {
+    @apply rounded-lg border border-border bg-panel;
+  }
+
+  .hairline {
+    @apply border-border;
+  }
+
+  .mono {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .metric-value {
+    @apply mono text-ink tabular-nums;
+  }
+
+  /* Subtle grid texture used behind the top bar and empty states */
+  .grid-texture {
+    background-image:
+      linear-gradient(to right, hsl(var(--border) / 0.5) 1px, transparent 1px),
+      linear-gradient(to bottom, hsl(var(--border) / 0.5) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border-strong)) transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--border-strong));
+    border-radius: 4px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}

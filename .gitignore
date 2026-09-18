@@ -1,0 +1,37 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- Node / Next ----
+node_modules/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+
+# ---- Runtime data ----
+# Anchored: a bare "data/" also matched ai_studio/data/, which is source code.
+/backend/data/
+/data/
+*.db
+*.sqlite
+*.sqlite3
+storage/
+
+# ---- Env ----
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# ---- Editors / OS ----
+.DS_Store
+.idea/
+.vscode/
+*.log
