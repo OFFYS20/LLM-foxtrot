@@ -100,6 +100,9 @@ def cmd_teach(args) -> int:
 
 
 def run_lesson(model, material, args) -> int:
+    if getattr(args, "until", None):
+        return run_until(model, material, args)
+
     last = {"line": ""}
 
     def on_log(message: str, level: str = "info") -> None:
@@ -126,6 +129,61 @@ def run_lesson(model, material, args) -> int:
 
     report_progress(model, lesson, args)
     return 0
+
+
+def run_until(model, material, args) -> int:
+    """Teach in rounds until the model gets where you asked, or stops improving."""
+    say(style(f"  teaching until '{args.until}' — {args.epochs:g} epoch(s) per round, "
+              f"at most {args.max_rounds}", DIM))
+    say(style("  every round is saved, so Ctrl-C is safe\n", DIM))
+
+    def on_round(index, lesson, label, share):
+        loss = lesson["held_out_loss"] or lesson["final_loss"]
+        bar = "#" * max(1, int((1 - min(share, 1.0)) * 24))
+        say(f"  round {index:>2}  held-out {loss:>7.4f}  {bar:<24} {label}")
+
+    summary = lessons.teach_until(
+        model, material,
+        target=args.until,
+        epochs_per_round=args.epochs,
+        max_rounds=args.max_rounds,
+        max_minutes=args.max_minutes,
+        batch_size=args.batch,
+        learning_rate=args.rate,
+        on_round=on_round,
+    )
+
+    if not summary["rounds"]:
+        say(f"\n  Nothing to do — {summary['reason']}.")
+        return 0
+
+    first, last_loss = summary["first_loss"], summary["held_out_loss"]
+    say("")
+    say(f"  rounds:        {summary['rounds']} ({summary['epochs']:g} epochs total)")
+    if first is not None and last_loss is not None:
+        say(f"  held-out loss: {first:.4f} -> {last_loss:.4f}")
+    say(f"  took:          {fmt_duration(summary['seconds'])} on {summary['device']}")
+    say(f"  stopped:       {summary['reason']}")
+
+    label, note, share = lessons.verdict(last_loss, lessons.model_vocab(model))
+    say(f"\n  {style(model.name + ': ' + label, BOLD)}")
+    say(style(f"  {note}", DIM))
+
+    if summary["reason"] == "it stopped improving" and share >= 0.28:
+        say(style("\n  More epochs will not help from here — it needs more material.", DIM))
+    else:
+        say(f"\n  Try it:  python -m teacher ask {model.name} \"...\"")
+    return 0
+
+
+def fmt_duration(seconds: float) -> str:
+    if seconds < 90:
+        return f"{seconds:.0f}s"
+    minutes, rest = divmod(int(seconds), 60)
+    if minutes < 60:
+        return f"{minutes}m {rest}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes}m"
 
 
 def report_progress(model, lesson, args) -> None:
@@ -288,9 +346,17 @@ def build_parser() -> argparse.ArgumentParser:
                          help="skip cleaning and use the text exactly as found")
 
     def add_training(sub):
-        sub.add_argument("--epochs", type=float, default=3.0, help="passes over the material (default 3)")
+        sub.add_argument("--epochs", type=float, default=3.0,
+                         help="passes over the material (default 3); one round when --until is used")
         sub.add_argument("--batch", type=int, default=8, help="sequences per step (default 8)")
         sub.add_argument("--rate", type=float, default=3e-4, help="learning rate (default 3e-4)")
+        sub.add_argument("--until", choices=list(lessons.TARGETS), metavar="STAGE",
+                         help="keep teaching until it reaches this stage, or stops improving: "
+                              + ", ".join(lessons.TARGETS))
+        sub.add_argument("--max-rounds", dest="max_rounds", type=int, default=20,
+                         help="most rounds an --until run may take (default 20)")
+        sub.add_argument("--max-minutes", dest="max_minutes", type=float, default=0.0,
+                         help="stop an --until run after this long (default: no limit)")
 
     new = subs.add_parser("new", help="build a new model and teach it its first lesson")
     new.add_argument("name")
@@ -339,8 +405,19 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def quiet_library_logging() -> None:
+    """Teacher prints its own progress; the library's stdout log would double it."""
+    import logging
+
+    from ai_studio.core import logging as studio_logging
+
+    studio_logging.configure()
+    logging.getLogger("ai_studio").setLevel(logging.WARNING)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    quiet_library_logging()
     try:
         return args.func(args)
     except TeacherError as exc:

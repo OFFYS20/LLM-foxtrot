@@ -106,6 +106,46 @@ both `new` and `teach`. Before any lesson starts, Teacher estimates the memory i
 needs and refuses the run if it will not fit, with suggestions — it will not
 start something that is likely to crash the machine.
 
+### Training until it is actually done
+
+Guessing at `--epochs` is how you end up with word soup. `--until` removes the
+guess: Teacher teaches in rounds, checks the held-out loss after each, and stops
+when the model reaches the stage you asked for **or** stops improving.
+
+```bash
+python -m teacher teach bookbot --from ./my-books --until sentences
+```
+
+```
+  teaching until 'sentences' — 3 epoch(s) per round, at most 20
+  every round is saved, so Ctrl-C is safe
+
+  round  1  held-out  3.4958  #########                learning the alphabet
+  round  2  held-out  2.5015  #############            learning words
+  round  3  held-out  1.8004  ################         learning words
+  round  4  held-out  1.2909  ##################       learning sentences
+  round  5  held-out  1.0020  ###################      learning sentences
+  round  6  held-out  0.8487  ####################     has the shape of your text
+
+  rounds:        6 (18 epochs total)
+  held-out loss: 3.4958 -> 0.8487
+  took:          19s on cpu
+  stopped:       it reached 'has the shape of your text'
+```
+
+Targets are `words`, `sentences` and `best` — `best` runs until it stops
+improving, whatever stage that turns out to be. `--epochs` sets the size of one
+round, `--max-rounds` caps how many (default 20) and `--max-minutes` puts a clock
+on the whole thing.
+
+It stops for one of four reasons, and says which: it reached the target, it
+stopped improving, it ran out of rounds, or it ran out of time. A model already
+past the target is left alone rather than trained pointlessly.
+
+Every round saves the model, so Ctrl-C at any point leaves the last completed
+round on disk. The whole run is written to the history as one entry, keeping each
+round's loss inside it.
+
 ---
 
 ## What a lesson actually does

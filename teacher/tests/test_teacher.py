@@ -7,6 +7,7 @@ simulated, the loss assertion would not hold.
 from __future__ import annotations
 
 import json
+import math
 import os
 import tempfile
 from pathlib import Path
@@ -260,6 +261,77 @@ def test_no_held_out_set_is_reported_as_unmeasured():
 def test_the_verdict_reads_the_vocabulary_off_the_model(taught):
     model, built, _lesson = taught
     assert lessons.model_vocab(model) == built["vocab_size"]
+
+
+# -------------------------------------------------------------- teach until
+def test_an_unknown_target_is_refused(taught, material_dir):
+    model, _built, _lesson = taught
+    with pytest.raises(TeacherError):
+        lessons.teach_until(model, gather([str(material_dir)]), target="perfection")
+
+
+def test_it_stops_once_it_reaches_the_target(material_dir):
+    model = workspace.get("auto-target", must_exist=False)
+    lessons.create(model, gather([str(material_dir)]), "tiny", context=64)
+    summary = lessons.teach_until(
+        model, gather([str(material_dir)]),
+        target="words", epochs_per_round=2.0, max_rounds=12, batch_size=8,
+    )
+    assert summary["rounds"] >= 1
+    assert "reached" in summary["reason"]
+
+    _label, _note, share = lessons.verdict(summary["held_out_loss"], lessons.model_vocab(model))
+    assert share < lessons.TARGETS["words"], "it stopped before actually getting there"
+    # On this corpus one round can already overshoot, so only require no regression.
+    assert summary["first_loss"] >= summary["held_out_loss"]
+    assert summary["held_out_loss"] < math.log(lessons.model_vocab(model)) * 0.28
+
+
+def test_a_model_already_past_the_target_is_left_alone(material_dir):
+    model = workspace.get("auto-target", must_exist=True)
+    before = len(model.history()["lessons"])
+    summary = lessons.teach_until(
+        model, gather([str(material_dir)]), target="words", epochs_per_round=1.0,
+    )
+    assert summary["rounds"] == 0
+    assert "already past" in summary["reason"]
+    assert len(model.history()["lessons"]) == before, "a no-op must not write a lesson"
+
+
+def test_max_rounds_is_honoured(material_dir):
+    model = workspace.get("auto-capped", must_exist=False)
+    lessons.create(model, gather([str(material_dir)]), "tiny", context=64)
+    summary = lessons.teach_until(
+        model, gather([str(material_dir)]),
+        target="best", epochs_per_round=1.0, max_rounds=2, batch_size=8,
+    )
+    assert summary["rounds"] <= 2
+
+
+def test_an_automatic_run_records_one_lesson_not_one_per_round(material_dir):
+    model = workspace.get("auto-record", must_exist=False)
+    lessons.create(model, gather([str(material_dir)]), "tiny", context=64)
+    summary = lessons.teach_until(
+        model, gather([str(material_dir)]),
+        target="words", epochs_per_round=2.0, max_rounds=10, batch_size=8,
+    )
+    entries = model.history()["lessons"]
+    assert len(entries) == 1, "the whole run is one entry in the record"
+    assert entries[0]["rounds"] == summary["rounds"]
+    assert entries[0]["epochs"] == summary["rounds"] * 2.0
+    assert len(entries[0]["lessons"]) == summary["rounds"], "each round's loss is kept"
+
+
+def test_every_round_is_saved_so_stopping_early_keeps_the_work(material_dir):
+    model = workspace.get("auto-saved", must_exist=False)
+    lessons.create(model, gather([str(material_dir)]), "tiny", context=64)
+    lessons.teach_until(
+        model, gather([str(material_dir)]),
+        target="best", epochs_per_round=1.0, max_rounds=2, batch_size=8,
+    )
+    assert model.exists(), "the weights must be on disk after an automatic run"
+    text, stats = lessons.talk(model, "the cat", max_new_tokens=8, seed=1)
+    assert stats["generated"] > 0
 
 
 # --------------------------------------------------------------------- pack

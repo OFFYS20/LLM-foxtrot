@@ -124,6 +124,7 @@ def teach(
     batch_size: int = 8,
     learning_rate: float = 3e-4,
     keep_checkpoints: int = 2,
+    record: bool = True,
     on_log=None,
 ) -> dict:
     """Run a real training pass over ``material`` and save what it learned."""
@@ -208,7 +209,8 @@ def teach(
         "device": check.device,
         "status": result.status,
     }
-    model.record(lesson)
+    if record:
+        model.record(lesson)
     return lesson
 
 
@@ -228,6 +230,119 @@ def _snapshot_previous(model: Model, keep: int) -> None:
     existing = sorted(p for p in model.checkpoints.iterdir() if p.is_dir())
     for stale in existing[:-keep]:
         shutil.rmtree(stale, ignore_errors=True)
+
+
+# ------------------------------------------------------------- teach until
+#: How far to go. "best" means keep going until it stops improving.
+TARGETS = {
+    "words": 0.28,
+    "sentences": 0.15,
+    "best": 0.0,
+}
+
+#: Below this much relative improvement a round has bought nothing worth having.
+PLATEAU = 0.01
+
+
+def teach_until(
+    model: Model,
+    material: Material,
+    *,
+    target: str = "sentences",
+    epochs_per_round: float = 3.0,
+    max_rounds: int = 20,
+    max_minutes: float = 0.0,
+    on_round=None,
+    **lesson_options,
+) -> dict:
+    """Keep teaching until the model reaches ``target`` or stops improving.
+
+    Every round saves the model, so stopping early — by limit, by plateau or by
+    Ctrl-C — always leaves the last completed round on disk.
+    """
+    if target not in TARGETS:
+        raise TeacherError(f"Unknown target '{target}'. Choose one of: {', '.join(TARGETS)}")
+
+    ceiling = TARGETS[target]
+    vocab = model_vocab(model)
+    started = time.time()
+    deadline = started + max_minutes * 60 if max_minutes else None
+
+    history: list[float] = []
+    rounds: list[dict] = []
+    reason = "reached the limit of rounds"
+
+    # A model already past the target needs no lesson at all.
+    previous = model.history().get("lessons", [])
+    if previous and previous[-1].get("held_out_loss") is not None:
+        _label, _note, share = verdict(previous[-1]["held_out_loss"], vocab)
+        if ceiling and share < ceiling:
+            return {
+                "rounds": 0,
+                "reason": "it is already past that stage",
+                "target": target,
+                "first_loss": previous[-1]["held_out_loss"],
+                "held_out_loss": previous[-1]["held_out_loss"],
+                "epochs": 0.0,
+                "seconds": 0.0,
+                "lessons": [],
+            }
+
+    for index in range(1, max_rounds + 1):
+        lesson = teach(
+            model, material,
+            epochs=epochs_per_round,
+            record=False,
+            **lesson_options,
+        )
+        rounds.append(lesson)
+        loss = lesson["held_out_loss"] or lesson["final_loss"]
+        label, _note, share = verdict(loss, vocab)
+
+        if on_round:
+            on_round(index, lesson, label, share)
+
+        if loss is None:
+            reason = "there is no held-out text to measure against"
+            break
+
+        if ceiling and share < ceiling:
+            reason = f"it reached '{label}'"
+            break
+
+        if history:
+            gain = (history[-1] - loss) / max(history[-1], 1e-9)
+            if gain < PLATEAU:
+                reason = "it stopped improving"
+                break
+        history.append(loss)
+
+        if deadline and time.time() >= deadline:
+            reason = f"it ran for {max_minutes:g} minute(s)"
+            break
+
+    final = rounds[-1] if rounds else {}
+    summary = {
+        "at": started,
+        "sources": material.sources,
+        "characters": material.characters,
+        "tokens": final.get("tokens", 0),
+        "epochs": epochs_per_round * len(rounds),
+        "rounds": len(rounds),
+        "steps": sum(r.get("steps", 0) for r in rounds),
+        "final_loss": final.get("final_loss"),
+        "held_out_loss": final.get("held_out_loss"),
+        "first_loss": rounds[0].get("held_out_loss") if rounds else None,
+        "perplexity": final.get("perplexity"),
+        "seconds": round(time.time() - started, 1),
+        "device": final.get("device", "cpu"),
+        "status": final.get("status", "completed"),
+        "target": target,
+        "reason": reason,
+        "lessons": [r.get("held_out_loss") for r in rounds],
+    }
+    model.record(summary)
+    return summary
 
 
 # -------------------------------------------------------------------- talk
