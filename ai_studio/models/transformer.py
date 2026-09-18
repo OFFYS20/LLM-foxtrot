@@ -615,6 +615,9 @@ SIZE_PRESETS: dict[str, dict[str, Any]] = {
     "large-500m": dict(
         hidden_size=1280, num_layers=23, num_heads=20, max_position_embeddings=2048, vocab_size=32000
     ),
+    "huge-1b": dict(
+        hidden_size=2048, num_layers=19, num_heads=16, max_position_embeddings=2048, vocab_size=32000
+    ),
 }
 
 #: Smallest useful size for a smoke test / CPU experimentation.

@@ -25,11 +25,12 @@ from ai_studio.training.trainer import Trainer, perplexity
 from teacher.material import Material
 from teacher.workspace import Model, TeacherError
 
+# Each tier is ten times the one below it.
 SIZES = {
-    "tiny": ("nano-1m", "about a million parameters — learns grammar in minutes on a laptop"),
-    "small": ("tiny-10m", "about ten million — needs a few MB of text and some patience"),
-    "medium": ("small-50m", "about fifty million — wants real hardware and a lot of text"),
-    "large": ("base-100m", "about a hundred million — a GPU and a large library"),
+    "tiny": ("nano-1m", "learns grammar in minutes on a laptop CPU"),
+    "small": ("tiny-10m", "a few MB of text and some patience; still fine on a CPU"),
+    "medium": ("base-100m", "wants a GPU and a library's worth of text"),
+    "large": ("huge-1b", "a serious GPU (24GB+) and gigabytes of text"),
 }
 
 SPECIALS = ["<unk>", "<s>", "</s>", "<pad>"]
@@ -306,5 +307,6 @@ def describe_sizes() -> str:
     lines = []
     for key, (preset, blurb) in SIZES.items():
         params = preset_config(preset).parameter_count()["total"]
-        lines.append(f"  {key:<7} {params / 1e6:>6.1f}M  {blurb}")
+        size = f"{params / 1e9:.1f}B" if params >= 1e9 else f"{params / 1e6:.0f}M"
+        lines.append(f"  {key:<7} {size:>5}  {blurb}")
     return "\n".join(lines)

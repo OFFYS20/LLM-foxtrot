@@ -125,14 +125,31 @@ def test_memory_estimate_grows_with_batch_and_sequence():
     assert small["weights_mb"] == pytest.approx(large["weights_mb"])
 
 
+UNITS = {"m": 1_000_000, "b": 1_000_000_000}
+
+
 @pytest.mark.parametrize("preset", sorted(SIZE_PRESETS))
 def test_every_preset_is_valid_and_roughly_its_advertised_size(preset):
     config = preset_config(preset)
     assert config.validate() == []
+
     advertised = preset.rsplit("-", 1)[1]
-    target = float(advertised.rstrip("mb")) * 1_000_000
+    unit = UNITS[advertised[-1]]
+    target = float(advertised[:-1]) * unit
     actual = config.parameter_count()["total"]
     assert 0.6 * target <= actual <= 1.6 * target, f"{preset} is actually {actual:,} parameters"
+
+
+def test_the_presets_climb_in_order():
+    """A preset named for a bigger size must actually be bigger."""
+    sized = sorted(
+        ((preset_config(name).parameter_count()["total"],
+          float(name.rsplit("-", 1)[1][:-1]) * UNITS[name.rsplit("-", 1)[1][-1]], name)
+         for name in SIZE_PRESETS),
+        key=lambda row: row[1],
+    )
+    actual = [row[0] for row in sized]
+    assert actual == sorted(actual), f"out of order: {[row[2] for row in sized]}"
 
 
 def test_config_survives_a_save_load_round_trip(tmp_path):

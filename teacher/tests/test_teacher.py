@@ -187,6 +187,39 @@ def test_a_seed_repeats_the_same_answer(taught):
     assert first == second
 
 
+# -------------------------------------------------------------------- sizes
+def test_the_sizes_climb_by_ten():
+    """tiny -> small -> medium -> large is 1M -> 10M -> 100M -> 1B."""
+    from ai_studio.models.transformer import preset_config
+
+    counts = [
+        preset_config(lessons.SIZES[key][0]).parameter_count()["total"]
+        for key in ("tiny", "small", "medium", "large")
+    ]
+    assert counts == sorted(counts), "each tier must be bigger than the last"
+    for smaller, bigger in zip(counts, counts[1:]):
+        ratio = bigger / smaller
+        assert 5 <= ratio <= 20, f"tiers should be about 10x apart, got {ratio:.1f}x"
+
+    expected = [1e6, 1e7, 1e8, 1e9]
+    for actual, target in zip(counts, expected):
+        assert 0.5 * target <= actual <= 2.0 * target, f"{actual:,} is not near {target:,.0f}"
+
+
+def test_every_size_names_a_real_preset():
+    from ai_studio.models.transformer import SIZE_PRESETS
+
+    for key, (preset, blurb) in lessons.SIZES.items():
+        assert preset in SIZE_PRESETS, f"{key} points at a preset that does not exist"
+        assert blurb, f"{key} has no description"
+
+
+def test_describe_sizes_reads_billions_as_billions():
+    listing = lessons.describe_sizes()
+    assert "1.0B" in listing, listing
+    assert "1019M" not in listing, "a billion-parameter model should not be shown in millions"
+
+
 # ------------------------------------------------------------------ verdict
 # Each pair below was measured from a real run, so the labels stay tied to what
 # a model at that loss actually writes.

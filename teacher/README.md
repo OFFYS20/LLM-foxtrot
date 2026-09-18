@@ -71,16 +71,33 @@ more than once to combine sources, or use `--text "..."` for something short.
 
 ### Sizes
 
-```
-  tiny       1.3M  about a million parameters — learns grammar in minutes on a laptop
-  small     10.1M  about ten million — needs a few MB of text and some patience
-  medium    48.7M  about fifty million — wants real hardware and a lot of text
-  large    102.5M  about a hundred million — a GPU and a large library
-```
+Each tier is ten times the one below it:
+
+| Size | Parameters | What it needs |
+|---|---|---|
+| `tiny` | 1M | learns grammar in minutes on a laptop CPU |
+| `small` | 10M | a few MB of text and some patience; still fine on a CPU |
+| `medium` | 100M | a GPU and a library's worth of text |
+| `large` | 1B | a serious GPU (24GB+) and gigabytes of text |
 
 Start with `tiny`. It will learn the shape of your text — sentence structure,
-punctuation, the rhythm of the source — within minutes on a CPU. The larger
-sizes need proportionally more text and a GPU to be worth the wait.
+punctuation, the rhythm of the source — within minutes on a CPU. Each step up
+needs roughly ten times the text and far more compute to be worth the wait; a
+tier too large for your material just memorises it.
+
+Teacher will not start a run that cannot fit. Asking for `large` on a laptop is
+refused before anything happens:
+
+```
+Stopped: This lesson would not fit in memory:
+  1019M parameters on CPU is not practical (expect days per epoch).
+  Estimated 17.1 GB exceeds the 15.0 GB available.
+
+Try:
+  Choose a smaller model, or use LoRA on a small base
+  Reduce batch size from 8 to 4
+  Enable gradient checkpointing (~4x less activation memory)
+```
 
 ### Training options
 

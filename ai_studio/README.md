@@ -279,7 +279,7 @@ You can also register a tokenizer from any Hub model to reuse it.
 * positions: RoPE (with theta and scaling) or learned
 * weight tying, dropout, bias
 
-Presets from `nano-1m` to `large-500m` are a starting point. The parameter count
+Presets from `nano-1m` to `huge-1b` are a starting point. The parameter count
 and the memory estimate update as you edit, and are computed analytically from
 the architecture — they match the instantiated model exactly.
 
