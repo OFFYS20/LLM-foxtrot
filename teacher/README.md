@@ -279,14 +279,66 @@ redistribute, what you download with it** — that is yours to judge, per source
 | `--list` | Show what the search found and download nothing |
 | `-o DIR` | Where to keep the files. The default is a dated folder under your models directory |
 
-`new` and `teach` take `--web "SOMETHING"` to do both steps at once:
+### Training a model on it, start to finish
+
+```bash
+# 1. Gather. Look first if you like — --list downloads nothing.
+python -m teacher web "history of lighthouses" --list
+
+# 2. Read the pages and keep them. The folder it prints is yours to keep.
+python -m teacher web "history of lighthouses" --results 8
+
+# 3. Train on that folder. Start from a pretrained model; see below for why.
+python -m teacher new seabot --base small \
+    --from "~/teacher-models/web-material/history-of-lighthouses-20260919-141500" \
+    --until best
+
+# 4. Talk to it.
+python -m teacher ask seabot "The keeper climbed"
+```
+
+Steps 1–3 collapse into one command when you already know what you want:
 
 ```bash
 python -m teacher new seabot --base small --web "history of lighthouses" --until best
 ```
 
-The pages are still saved to a folder and the path is printed — nothing is
-fetched into memory and thrown away.
+The pages are still saved to a folder and the path is still printed — nothing
+is fetched into memory and thrown away.
+
+In the window it is the same four steps: **Text → …or fetch it from the web**,
+type what you want and press *Search and keep*; the folder box fills in by
+itself, so **Make** and **Teach** are ready to press.
+
+### How much is enough
+
+Six Wikipedia articles came to 206,000 characters — about 34,000 per page.
+Ordinary web pages are shorter, nearer 10,000. So a five-page run is somewhere
+around 50,000–150,000 characters, and that number decides which route works:
+
+| | What 200,000 characters of web pages gets you |
+|---|---|
+| **From a pretrained model** | Works. It already writes English; the pages move its subject matter and register |
+| **From scratch** | Does not work. It has to learn the language itself, and this is nowhere near enough |
+
+Both runs below are real, on the same six articles, on a CPU:
+
+```
+from scratch, tiny:   held-out 7.32 -> 6.18 over 7 rounds, then stopped improving
+                      "barely started — more epochs will not help, it needs more material"
+
+from a pretrained
+model, --base small:  held-out 2.60 after one pass, 4m 36s
+                      "barely moved — it still writes like its base model"
+```
+
+Neither is a failure of the tool; they are two honest readings. From scratch
+genuinely needs a few hundred KB at minimum — twenty to forty pages — and even
+then `tiny` is the only tier worth attempting on a laptop. From a pretrained
+model, *barely moved* after one pass over 200,000 characters is the expected
+place to be: keep teaching, or gather more, and watch the held-out number.
+
+**So: use `--base small` with web material unless you have gathered a lot.**
 
 **What it will and will not do.** It searches DuckDuckGo, and falls back to
 Wikipedia's own search when DuckDuckGo blocks or rate-limits the machine; if

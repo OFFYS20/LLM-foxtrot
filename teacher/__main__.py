@@ -430,7 +430,13 @@ THE COMMANDS
       downloading anything; add -o DIR to choose where it goes.
       Then teach from it with --from FOLDER.
 
-      new and teach also take --web "SOMETHING" to do both in one step.
+      new and teach also take --web "SOMETHING" to do both in one step:
+      {python} -m teacher --json new NAME --base small --web "SOMETHING" --until best
+
+      Pages run about 10,000-34,000 characters each, so five pages is roughly
+      50,000-150,000. That is enough to fine-tune a pretrained model and far
+      too little to build one from scratch, so always pair --web with --base
+      unless I have asked you to gather dozens of pages.
 
   PATH is a file or a folder. It reads .txt .md .pdf .docx .epub .html .csv
   .json and walks folders. --text "..." works instead of --from for short text.
@@ -451,6 +457,8 @@ RULES
     pages you took. Those pages are someone else's writing under someone
     else's terms; every saved file keeps its address for that reason. Five to
     ten pages is a normal run — do not pull hundreds.
+  - With web material, use --base. A handful of pages cannot teach a model
+    English from nothing; it will stop at "barely started" and say so.
   - Start from a pretrained model unless I say I want to watch one learn from
     nothing; the output is far better.
   - Use --until best rather than picking an epoch count.

@@ -96,6 +96,18 @@ or you named, never links inside a page, and refuses anything on this machine or
 its local network. The same thing is in the window, under **Text → …or fetch it
 from the web**.
 
+```bash
+python -m teacher web "history of lighthouses" --results 8       # gather
+python -m teacher new seabot --base small --from "<the folder it printed>" --until best
+python -m teacher ask seabot "The keeper climbed"
+```
+
+Use `--base` with web material. A handful of pages is plenty to fine-tune a
+model that already writes English, and nowhere near enough to teach one the
+language from scratch — the walkthrough in
+[teacher/README.md](teacher/README.md#how-much-is-enough) shows both runs and
+what each actually reaches.
+
 This gathers *material*. It does not make a small model able to browse — that is
 an ability of far larger instruction-tuned models. AI Studio registers
 `web_search` and `read_web_page` as tools for a capable model you have imported.

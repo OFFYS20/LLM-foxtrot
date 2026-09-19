@@ -225,7 +225,10 @@ def teach(
     # so one training block does not demand more material than there is.
     block = min(context_length(model, network), 512)
 
-    ids = tokenizer(material.text, add_special_tokens=False)["input_ids"]
+    # verbose=False silences "Token indices sequence length is longer than the
+    # specified maximum" — true of the corpus, irrelevant here: PackedLMDataset
+    # cuts it into `block`-sized windows and the model never sees it whole.
+    ids = tokenizer(material.text, add_special_tokens=False, verbose=False)["input_ids"]
     if len(ids) < block * 2:
         raise TeacherError(
             f"The material is only {len(ids):,} tokens, and one training block is {block}. "
