@@ -118,6 +118,11 @@ python -m teacher --json teach bookbot --from ./my-books --until best
 Failures come back the same shape with `"ok": false` and an `"error"`, so an
 assistant can tell you what went wrong instead of guessing.
 
+**Every command, on every path, prints exactly one object** — an empty workspace,
+a model that was built but not taught, a failure. Nothing else reaches stdout,
+not even during a live training run, so there is nothing for an assistant to
+misread. Ten tests hold that contract in place.
+
 ---
 
 ## Reading the numbers

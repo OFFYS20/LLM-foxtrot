@@ -28,7 +28,7 @@ def style(text: str, code: str) -> str:
 
 
 #: When true, prose goes nowhere and every command ends in one JSON object.
-_JSON = {"on": False}
+_JSON = {"on": False, "emitted": False}
 
 
 def say(message: str = "") -> None:
@@ -39,10 +39,11 @@ def say(message: str = "") -> None:
 
 def emit(**payload) -> int:
     """The machine-readable result of a command. Prints only in --json mode."""
-    if not _JSON["on"]:
+    if not _JSON["on"] or _JSON["emitted"]:
         return 0
     import json as _json
 
+    _JSON["emitted"] = True
     print(_json.dumps({"ok": True, **payload}, default=str, indent=2), flush=True)
     return 0
 
@@ -112,7 +113,7 @@ def cmd_new(args) -> int:
     if args.no_teach:
         say("\nMade but not taught — it will produce noise until you run: "
             f"teacher teach {model.name} --from <material>")
-        return 0
+        return emit(command="new", model=model.name, taught=False, **built)
 
     say(f"\n{style('First lesson', BOLD)}")
     return run_lesson(model, material, args)
@@ -185,7 +186,8 @@ def run_until(model, material, args) -> int:
 
     if not summary["rounds"]:
         say(f"\n  Nothing to do — {summary['reason']}.")
-        return 0
+        return emit(command="teach", model=model.name, rounds=0,
+                    reason=summary["reason"], held_out_loss=summary["held_out_loss"])
 
     first, last_loss = summary["first_loss"], summary["held_out_loss"]
     say("")
@@ -281,7 +283,7 @@ def cmd_list(args) -> int:
     if not models:
         say(f"No models yet in {workspace.root()}.")
         say("Make one with:  teacher new mymodel --from ./some-text")
-        return 0
+        return emit(command="list", home=str(workspace.root()), models=[])
 
     say(f"{'NAME':<22}{'PARAMS':>9}{'TAUGHT':>12}{'LESSONS':>9}{'SIZE':>9}")
     for model in models:
@@ -396,6 +398,9 @@ def cmd_ui(args) -> int:
         raise TeacherError(
             f"The window needs gradio: pip install gradio  ({exc})"
         ) from exc
+    if _JSON["on"]:
+        return emit(command="ui", url=f"http://{args.host}:{args.port}",
+                    note="the window runs until stopped; start it without --json")
     say(f"Opening Teacher at http://{args.host}:{args.port}")
     say(style("Close this window or press Ctrl-C to stop it.\n", DIM))
     ui.launch(host=args.host, port=args.port, share=args.share,
@@ -433,7 +438,9 @@ def cmd_show(args) -> int:
 
     if not lessons_taught:
         say("\n  Never taught anything — it will produce noise.")
-        return 0
+        return emit(command="show", model=model.name, kind=model.kind(),
+                    base=model.base_repo(), architecture=arch, lessons=0,
+                    stage="never taught", path=str(model.path))
 
     say(f"\n  {len(lessons_taught)} lesson(s), {fmt_count(model.taught_characters())} characters total")
     for index, lesson in enumerate(lessons_taught[-8:], start=max(1, len(lessons_taught) - 7)):
@@ -462,7 +469,7 @@ def cmd_pack(args) -> int:
     for name in copied:
         say(f"  {name}  {fmt_bytes((destination / name).stat().st_size)}")
     say(style("\nOpen web_chat/index.html and drop that folder in to talk to it.", DIM))
-    return 0
+    return emit(command="pack", model=model.name, destination=str(destination), files=copied)
 
 
 def cmd_forget(args) -> int:
@@ -476,7 +483,7 @@ def cmd_forget(args) -> int:
 
     shutil.rmtree(model.path)
     say(f"Deleted {model.name}.")
-    return 0
+    return emit(command="forget", model=model.name, deleted=True)
 
 
 # --------------------------------------------------------------------- parser
@@ -591,14 +598,20 @@ def quiet_library_logging() -> None:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     _JSON["on"] = bool(getattr(args, "json", False))
+    _JSON["emitted"] = False
     quiet_library_logging()
     try:
-        return args.func(args)
+        code = args.func(args)
+        # Anything reading stdout must find an object, whatever path ran.
+        emit(command=args.command)
+        return code
     except TeacherError as exc:
-        if _JSON["on"]:
+        if _JSON["on"] and not _JSON["emitted"]:
             import json as _json
 
-            print(_json.dumps({"ok": False, "error": str(exc)}, indent=2), flush=True)
+            _JSON["emitted"] = True
+            print(_json.dumps({"ok": False, "command": args.command,
+                               "error": str(exc)}, indent=2), flush=True)
         else:
             say(f"\n{style('Stopped:', BOLD)} {exc}")
         return 1
