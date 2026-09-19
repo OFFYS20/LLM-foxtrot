@@ -18,7 +18,7 @@ from tokenizers import Tokenizer, decoders, models, pre_tokenizers, processors, 
 from transformers import PreTrainedTokenizerFast
 
 from ai_studio.models.transformer import SIZE_PRESETS, TransformerConfig, TransformerLM, preset_config
-from ai_studio.training.config import TrainingConfig, preflight
+from ai_studio.training.config import TrainingConfig, fit_batch_size, preflight
 from ai_studio.training.data import PackedLMDataset
 from ai_studio.training.trainer import Trainer, perplexity
 
@@ -206,7 +206,7 @@ def teach(
     material: Material,
     *,
     epochs: float = 3.0,
-    batch_size: int = 8,
+    batch_size: int | str = 8,
     learning_rate: float = 3e-4,
     keep_checkpoints: int = 2,
     lora: bool = False,
@@ -244,40 +244,58 @@ def teach(
     train_set = PackedLMDataset(train_ids, block)
     eval_set = PackedLMDataset(eval_ids, block) if len(eval_ids) >= block else None
 
-    settings = TrainingConfig(
-        method="lora" if lora else "continued_pretraining",
-        epochs=float(epochs),
-        batch_size=int(batch_size),
-        learning_rate=float(learning_rate),
-        max_sequence_length=block,
-        precision="fp32",
-        lr_scheduler="cosine",
-        warmup_steps=max(5, int(len(train_set) * epochs / batch_size * 0.03)),
-        log_interval=max(1, len(train_set) // batch_size // 10),
-        eval_interval=max(10, len(train_set) // batch_size // 4) if eval_set else 0,
-        checkpoint_interval=0,
-        keep_last_checkpoints=keep_checkpoints,
-    )
-    settings.validate()
+    arch = model.architecture()
+    # Depth, vocabulary and MLP width decide the memory a step needs, and none
+    # of them can be read off a parameter count.
+    shape = {
+        "hidden_size": arch.get("hidden_size"),
+        "num_layers": arch.get("num_hidden_layers") or arch.get("num_layers"),
+        "num_heads": arch.get("num_attention_heads") or arch.get("num_heads"),
+        "intermediate_size": arch.get("intermediate_size"),
+        "vocab_size": arch.get("vocab_size"),
+    }
+
+    def configure(size: int) -> TrainingConfig:
+        return TrainingConfig(
+            method="lora" if lora else "continued_pretraining",
+            epochs=float(epochs),
+            batch_size=int(size),
+            learning_rate=float(learning_rate),
+            max_sequence_length=block,
+            # "auto" takes what the card can do. Holding a modern GPU at FP32
+            # halves its throughput and doubles its activation memory for
+            # nothing — most of the difference between a card at 50% and a card
+            # that is working.
+            precision="auto",
+            lr_scheduler="cosine",
+            warmup_steps=max(5, int(len(train_set) * epochs / size * 0.03)),
+            log_interval=max(1, len(train_set) // size // 10),
+            eval_interval=max(10, len(train_set) // size // 4) if eval_set else 0,
+            checkpoint_interval=0,
+            keep_last_checkpoints=keep_checkpoints,
+        )
+
+    automatic = str(batch_size).strip().lower() == "auto"
+    settings = configure(1 if automatic else int(batch_size))
 
     total_parameters = network.num_parameters()
     lora_stats = _attach_lora(model, network, settings, lora_rank) if lora else None
     if lora_stats:
         network = lora_stats.pop("network")
 
-    arch = model.architecture()
-    check = preflight(
-        settings,
+    estimate = dict(
         parameter_count=total_parameters,
         trainable_parameters=lora_stats["trainable_parameters"] if lora_stats else None,
-        # Depth, vocabulary and MLP width decide the memory a step needs, and
-        # none of them can be read off a parameter count.
-        hidden_size=arch.get("hidden_size"),
-        num_layers=arch.get("num_hidden_layers") or arch.get("num_layers"),
-        num_heads=arch.get("num_attention_heads") or arch.get("num_heads"),
-        intermediate_size=arch.get("intermediate_size"),
-        vocab_size=arch.get("vocab_size"),
+        **shape,
     )
+    if automatic:
+        chosen, why = fit_batch_size(settings, samples=len(train_set), **estimate)
+        settings = configure(chosen)
+        if on_log:
+            on_log(f"[PREP] batch {chosen} is the largest that fits — {why}")
+    settings.validate()
+
+    check = preflight(settings, **estimate)
     if not check.ok:
         raise TeacherError(
             "This lesson would not fit in memory:\n  "

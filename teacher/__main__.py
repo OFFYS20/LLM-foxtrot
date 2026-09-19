@@ -460,6 +460,10 @@ THE COMMANDS
       downloading anything; add -o DIR to choose where it goes.
       Then teach from it with --from FOLDER.
 
+      Add --batch auto to fill the hardware: it picks the largest batch that
+      fits in memory and still leaves enough optimizer steps to learn from.
+      Worth using whenever a GPU is sitting at half load.
+
       Add --lora to teach or new to train a small adapter instead of every
       weight: far less memory, so a bigger base fits. Pretrained models only —
       it is refused on one built from scratch, with a reason.
@@ -756,7 +760,9 @@ def build_parser() -> argparse.ArgumentParser:
     def add_training(sub):
         sub.add_argument("--epochs", type=float, default=3.0,
                          help="passes over the material (default 3); one round when --until is used")
-        sub.add_argument("--batch", type=int, default=8, help="sequences per step (default 8)")
+        sub.add_argument("--batch", default="8", metavar="N",
+                         help="sequences per step (default 8). 'auto' picks the largest "
+                              "that fits, which is usually what a half-idle GPU is missing")
         sub.add_argument("--rate", type=float, default=3e-4, help="learning rate (default 3e-4)")
         sub.add_argument("--until", choices=list(lessons.TARGETS), metavar="STAGE",
                          help="keep teaching until it reaches this stage, or stops improving: "

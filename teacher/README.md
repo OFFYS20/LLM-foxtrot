@@ -130,7 +130,7 @@ Add `--json` to any command for one machine-readable object instead of prose.
 | `new` | `--trust-remote-code` | Let a base model run its own code — only for repos you trust |
 | `new`, `teach` | `--from`, `--text`, `--raw` | Where the material comes from; `--raw` skips cleaning |
 | `new`, `teach` | `--web`, `--web-results` | Gather material from the web first, and how many pages to read |
-| `new`, `teach` | `--epochs`, `--batch`, `--rate` | Passes, sequences per step, learning rate |
+| `new`, `teach` | `--epochs`, `--batch`, `--rate` | Passes, sequences per step (`auto` to fill the hardware), learning rate |
 | `new`, `teach` | `--until`, `--max-rounds`, `--max-minutes` | Teach in rounds until done, and the limits on that |
 | `new`, `teach` | `--keep N` | How many saved states to keep behind the model (default 2) |
 | `new`, `teach` | `--lora`, `--lora-rank N` | Train a small adapter instead of every weight (pretrained only) |
@@ -194,6 +194,50 @@ Try:
   Reduce batch size from 8 to 4
   Enable gradient checkpointing (~4x less activation memory)
 ```
+
+### Making the hardware work
+
+If your GPU sits at half load, it is almost always waiting rather than
+thinking. Three things account for most of it, and Teacher now handles all
+three.
+
+**Precision.** Training runs in `auto`, which means bf16 on a card that
+supports it, fp16 on one that does not, and fp32 on CPU where half precision is
+slower and less reliable. Holding a modern GPU at fp32 roughly halves its
+throughput and doubles its activation memory for nothing.
+
+**TF32 and the tensor cores.** Turned on for every CUDA run, along with
+`cudnn.benchmark` — the block size never changes during a lesson, so letting
+cuDNN pick its best kernel once pays off for the rest of the run. On CPU,
+Teacher instead sets the thread count to the cores you actually have.
+
+**Batch size.** This is usually the real culprit: a small batch leaves the card
+queueing tiny kernels and idling between them.
+
+```bash
+python -m teacher teach bookbot --from ./text --batch auto
+```
+
+```
+  batch 96 is the largest that fits — 8.9 GB of the 14.5 GB available
+```
+
+It walks a ladder of batch sizes, estimates each with the same memory model the
+preflight check uses, and stops one rung below the cliff. It also stops before
+the batch grows so large that an epoch has too few optimizer steps to learn
+anything — a full GPU and a wasted afternoon is still a wasted afternoon:
+
+```
+  batch 8 is the largest that fits — 8 keeps 28 steps in an epoch; a bigger
+  batch would leave too few to learn from
+```
+
+When it says that, more material is what you need, not a bigger batch.
+
+**What will not help.** Teacher does not spin up DataLoader worker processes,
+because the dataset is one tensor in memory and a batch is a slice of it —
+workers would add process spawn and IPC cost to a memcpy. Raise `num_workers`
+only for a dataset that reads from disk.
 
 ### Training options
 

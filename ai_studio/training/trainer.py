@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 import threading
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -100,6 +101,38 @@ class TrainingResult:
     history: list[dict[str, Any]] = field(default_factory=list)
 
 
+def tune_runtime(device: torch.device, *, threads: int = 0) -> dict:
+    """Let the hardware do what it can. Returns what was turned on.
+
+    Two settings account for most of a GPU that looks half-idle: TF32, which
+    uses the tensor cores for ordinary FP32 matmuls, and the thread count,
+    which on CPU decides how many cores are used at all.
+    """
+    applied: dict[str, object] = {}
+
+    if device.type == "cuda":
+        try:
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            torch.backends.cudnn.benchmark = True  # fixed block size, so it pays off
+            applied["tf32"] = True
+        except AttributeError:  # pragma: no cover - older torch
+            applied["tf32"] = False
+        try:
+            torch.set_float32_matmul_precision("high")
+            applied["matmul_precision"] = "high"
+        except (AttributeError, ValueError):  # pragma: no cover
+            pass
+    else:
+        wanted = threads or (os.cpu_count() or 1)
+        try:
+            torch.set_num_threads(max(1, int(wanted)))
+            applied["threads"] = torch.get_num_threads()
+        except (RuntimeError, ValueError):  # pragma: no cover - already started
+            applied["threads"] = torch.get_num_threads()
+    return applied
+
+
 class Trainer:
     """Owns one training run."""
 
@@ -143,11 +176,22 @@ class Trainer:
 
     def _resolve_dtype(self) -> tuple[torch.dtype, bool]:
         """Return (autocast dtype, enabled). CPU keeps FP32 — half precision
-        there is slow and numerically unreliable."""
+        there is slow and numerically unreliable.
+
+        "auto" means: take what this card can actually do. Leaving a modern GPU
+        in FP32 halves its throughput and doubles its activation memory for
+        nothing, which is most of the difference between a card at 50% and a
+        card that is working.
+        """
         if self.device.type == "cuda":
-            if self.config.precision == "bf16" and torch.cuda.is_bf16_supported():
+            wanted = self.config.precision
+            if wanted == "auto":
+                # bf16 has fp32's exponent range, so it needs no loss scaling.
+                return ((torch.bfloat16, True) if torch.cuda.is_bf16_supported()
+                        else (torch.float16, True))
+            if wanted == "bf16" and torch.cuda.is_bf16_supported():
                 return torch.bfloat16, True
-            if self.config.precision == "fp16":
+            if wanted == "fp16":
                 return torch.float16, True
         elif self.device.type == "cpu" and self.config.precision == "bf16":
             return torch.bfloat16, False  # supported but usually slower; keep FP32
@@ -224,6 +268,7 @@ class Trainer:
     # ------------------------------------------------------------- training
     def train(self) -> TrainingResult:
         torch.manual_seed(self.config.seed)
+        tune_runtime(self.device, threads=self.config.num_threads)
         started = time.time()
 
         train_loader = DataLoader(
@@ -231,7 +276,11 @@ class Trainer:
             batch_size=self.config.batch_size,
             shuffle=True,
             collate_fn=collate,
+            # The dataset is one tensor in memory and a batch is a slice of it,
+            # so worker processes would add spawn and IPC cost to a memcpy.
+            # Raise num_workers only for a dataset that reads from disk.
             num_workers=self.config.num_workers,
+            persistent_workers=self.config.num_workers > 0,
             drop_last=False,
             pin_memory=self.device.type == "cuda",
         )

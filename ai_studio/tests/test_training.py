@@ -292,3 +292,70 @@ def test_gradient_checkpointing_still_lowers_it():
     plain = preflight(TrainingConfig(gradient_checkpointing=False), **MEASURED)
     checkpointed = preflight(TrainingConfig(gradient_checkpointing=True), **MEASURED)
     assert checkpointed.estimated_mb < plain.estimated_mb
+
+
+# ------------------------------------------------- filling the hardware
+def test_auto_precision_takes_half_on_a_gpu_and_leaves_cpu_alone():
+    """Holding a modern card at FP32 halves its throughput for nothing."""
+    import torch
+
+    from ai_studio.training.trainer import Trainer
+
+    trainer = Trainer.__new__(Trainer)
+    trainer.config = TrainingConfig(precision="auto")
+
+    trainer.device = torch.device("cpu")
+    dtype, enabled = trainer._resolve_dtype()
+    assert (dtype, enabled) == (torch.float32, False), "half precision on CPU is slower"
+
+    if torch.cuda.is_available():  # pragma: no cover - depends on the machine
+        trainer.device = torch.device("cuda")
+        dtype, enabled = trainer._resolve_dtype()
+        assert enabled and dtype in (torch.bfloat16, torch.float16)
+
+
+def test_auto_precision_is_a_valid_setting():
+    TrainingConfig(precision="auto").validate()
+
+
+def test_tuning_the_runtime_uses_the_cores_it_has():
+    import torch
+
+    from ai_studio.training.trainer import tune_runtime
+
+    applied = tune_runtime(torch.device("cpu"))
+    assert applied["threads"] >= 1
+
+
+def test_a_bigger_batch_is_chosen_when_there_is_data_and_memory_for_it():
+    from ai_studio.training.config import fit_batch_size
+
+    config = TrainingConfig(max_sequence_length=512, precision="auto")
+    small = dict(parameter_count=1_280_000, hidden_size=128, num_layers=4,
+                 num_heads=4, intermediate_size=512, vocab_size=4096)
+    chosen, why = fit_batch_size(config, samples=50_000, **small)
+    assert chosen > 8, f"a 1M model with 50k samples should batch large, got {chosen}"
+    assert why
+
+
+def test_a_heavy_model_is_batched_down():
+    from ai_studio.training.config import fit_batch_size
+
+    config = TrainingConfig(max_sequence_length=512, precision="auto")
+    light = fit_batch_size(config, samples=50_000, parameter_count=1_280_000,
+                           hidden_size=128, num_layers=4, num_heads=4,
+                           intermediate_size=512, vocab_size=4096)[0]
+    heavy = fit_batch_size(config, samples=50_000, **MEASURED)[0]
+    assert heavy < light
+
+
+def test_the_batch_never_starves_the_run_of_steps():
+    """A full GPU and four optimizer steps is a wasted afternoon."""
+    from ai_studio.training.config import MIN_STEPS_PER_EPOCH, fit_batch_size
+
+    config = TrainingConfig(max_sequence_length=512, precision="auto")
+    chosen, why = fit_batch_size(
+        config, samples=200, parameter_count=1_280_000, hidden_size=128,
+        num_layers=4, num_heads=4, intermediate_size=512, vocab_size=4096)
+    assert 200 // chosen >= MIN_STEPS_PER_EPOCH
+    assert "steps" in why, "it must say the data was the limit, not the memory"

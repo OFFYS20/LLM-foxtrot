@@ -7,7 +7,7 @@ refuses to start a configuration that is very likely to crash the machine.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 from ai_studio.core.errors import ValidationError
@@ -32,7 +32,7 @@ METHOD_LABELS = {
 
 OPTIMIZERS = ("adamw", "adamw_8bit", "adafactor", "sgd", "adam")
 SCHEDULERS = ("cosine", "linear", "constant", "constant_with_warmup", "polynomial")
-PRECISIONS = ("fp32", "fp16", "bf16")
+PRECISIONS = ("auto", "fp32", "fp16", "bf16")
 
 #: Sensible LoRA target modules per known architecture family.
 LORA_TARGETS = {
@@ -117,6 +117,8 @@ class TrainingConfig:
     save_best: bool = True
     eval_max_batches: int = 20
     num_workers: int = 0
+    #: 0 means every core. Only used on CPU; a GPU run is not thread-bound.
+    num_threads: int = 0
     lora: LoRASettings = field(default_factory=LoRASettings)
 
     # ----------------------------------------------------------- validation
@@ -277,7 +279,8 @@ def preflight(
         available = (snapshot.ram_available_gb or 0) * 1024 or None
 
     trainable = trainable_parameters if trainable_parameters is not None else parameter_count
-    bytes_per_param = 2 if config.precision in {"fp16", "bf16"} else 4
+    half = config.precision in {"fp16", "bf16"} or (config.precision == "auto" and on_gpu)
+    bytes_per_param = 2 if half else 4
     if config.quantization == "4bit":
         weight_bytes = parameter_count * 0.5
     elif config.quantization == "8bit":
@@ -371,3 +374,51 @@ def preflight(
             "effective_batch_size": config.effective_batch_size,
         },
     )
+
+
+#: Batch sizes worth trying when asked to fill the hardware.
+BATCH_LADDER = (1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128)
+
+
+#: Below this many optimizer steps in an epoch, a run barely trains at all:
+#: the warmup never finishes and the schedule never decays.
+MIN_STEPS_PER_EPOCH = 20
+
+
+def fit_batch_size(
+    config: TrainingConfig,
+    *,
+    samples: int | None = None,
+    headroom: float = 0.8,
+    min_steps: int = MIN_STEPS_PER_EPOCH,
+    **architecture,
+) -> tuple[int, str]:
+    """The largest batch from the ladder that fits and still trains.
+
+    A batch too small leaves a GPU queueing tiny kernels and waiting. A batch
+    too large either dies partway through or — the quieter failure — leaves so
+    few optimizer steps that the model hardly moves: a full GPU and a wasted
+    afternoon. This stops one rung below whichever of those comes first.
+
+    Returns the size and a sentence saying why.
+    """
+    ceiling = max(1, samples // min_steps) if samples else None
+
+    best, reason = BATCH_LADDER[0], "the smallest the ladder has"
+    for candidate in BATCH_LADDER:
+        if ceiling is not None and candidate > ceiling:
+            reason = (f"{best} keeps {samples // max(1, best)} steps in an epoch; "
+                      f"a bigger batch would leave too few to learn from")
+            break
+        if samples is not None and candidate > samples:
+            break
+        trial = replace(config, batch_size=candidate)
+        check = preflight(trial, **architecture)
+        if not check.ok or not check.available_mb:
+            break
+        if check.estimated_mb > check.available_mb * headroom:
+            break
+        best = candidate
+        reason = (f"{check.estimated_mb / 1024:.1f} GB of the "
+                  f"{check.available_mb / 1024:.1f} GB available")
+    return best, reason
