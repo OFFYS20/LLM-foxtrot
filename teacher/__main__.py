@@ -185,6 +185,8 @@ def run_lesson(model, material, args) -> int:
         batch_size=args.batch,
         learning_rate=args.rate,
         keep_checkpoints=getattr(args, "keep", 2),
+        lora=getattr(args, "lora", False),
+        lora_rank=getattr(args, "lora_rank", 16),
         on_log=on_log,
     )
 
@@ -194,6 +196,12 @@ def run_lesson(model, material, args) -> int:
     if lesson["held_out_loss"] is not None:
         say(f"  on held-out:   {lesson['held_out_loss']:.4f}  (perplexity {lesson['perplexity']:.1f})")
     say(f"  took:          {lesson['seconds']:.1f}s on {lesson['device']}")
+    if lesson.get("lora"):
+        detail = lesson["lora"]
+        say(f"  adapter:       rank {detail['rank']} on {', '.join(detail['target_modules'])}")
+        say(f"                 {fmt_count(detail['trainable_parameters'])} of "
+            f"{fmt_count(detail['total_parameters'])} weights trained "
+            f"({detail['trainable_percent']:.2f}%), then merged in")
 
     report_progress(model, lesson, args)
     label, _note, share = lessons.judge(model, lesson["held_out_loss"])
@@ -222,6 +230,8 @@ def run_until(model, material, args) -> int:
         batch_size=args.batch,
         learning_rate=args.rate,
         keep_checkpoints=getattr(args, "keep", 2),
+        lora=getattr(args, "lora", False),
+        lora_rank=getattr(args, "lora_rank", 16),
         on_round=on_round,
     )
 
@@ -429,6 +439,11 @@ THE COMMANDS
       Undo the last lesson if it made the model worse, or go back to a named
       saved state. Two are kept by default; --keep N on a lesson keeps more.
 
+  {python} -m teacher --json compare A B --prompt "some words"
+      The same prompt through two or more models at the same seed. Returns each
+      one's reply, stage and held-out loss, and whether those losses can be
+      compared at all — they cannot across different vocabularies.
+
   {python} -m teacher --json checkpoints NAME
       The saved states this model can go back to or branch from, newest last.
 
@@ -444,6 +459,10 @@ THE COMMANDS
       without a search; add --list to see what a search found without
       downloading anything; add -o DIR to choose where it goes.
       Then teach from it with --from FOLDER.
+
+      Add --lora to teach or new to train a small adapter instead of every
+      weight: far less memory, so a bigger base fits. Pretrained models only —
+      it is refused on one built from scratch, with a reason.
 
       new and teach also take --web "SOMETHING" to do both in one step:
       {python} -m teacher --json new NAME --base small --web "SOMETHING" --until best
@@ -483,7 +502,9 @@ RULES
   - If a lesson raises the held-out loss, say so and offer to roll it back.
   - Before trying something that might not work — much more material, a very
     different setting — branch the model first and train the branch. Then
-    neither of us has to undo anything.
+    neither of us has to undo anything, and `compare` says which won.
+  - Do not read two models' losses against each other unless compare says
+    they are comparable. It tells you.
   - Tell me the stage and whether it is still improving. Skip the numbers
     unless I ask.
 """
@@ -597,6 +618,50 @@ def cmd_pack(args) -> int:
     return emit(command="pack", model=model.name, destination=str(destination), files=copied)
 
 
+def cmd_compare(args) -> int:
+    """The same prompt through two or more models, under identical sampling."""
+    models = [workspace.get(name) for name in args.names]
+    prompt = " ".join(args.prompt).strip() or "The"
+
+    result = lessons.compare(
+        models, prompt,
+        max_new_tokens=args.tokens, temperature=args.temperature,
+        top_p=args.top_p, top_k=args.top_k, seed=args.seed,
+    )
+
+    say(f"{style('Prompt', BOLD)}  {prompt!r}   "
+        + style(f"(seed {result['seed']}, {args.tokens} tokens, temperature "
+                f"{args.temperature})", DIM))
+
+    for entry in result["models"]:
+        say(f"\n{style(entry['model'], BOLD)}  —  {entry['stage']}")
+        detail = [f"{entry['lessons']} lesson(s)"]
+        if entry["held_out_loss"] is not None:
+            detail.append(f"held-out {entry['held_out_loss']:.4f}")
+        detail.append(f"vocabulary {entry['vocab_size']:,}")
+        if entry["branched_from"]:
+            detail.append(f"branched from {entry['branched_from']}")
+        say(style("  " + " · ".join(detail), DIM))
+        say(f"  {style(prompt, DIM)}{entry['reply']}")
+
+    say("")
+    if result["losses_comparable"]:
+        best = min(result["models"], key=lambda entry: entry["held_out_loss"])
+        say(f"  Lowest held-out loss: {style(best['model'], BOLD)} "
+            f"({best['held_out_loss']:.4f})")
+        say(style("  Same vocabulary, so the numbers line up — but they were each "
+                  "measured on their own material.", DIM))
+        say(style("  Only trust the comparison if you taught them the same text.", DIM))
+    elif not result["same_vocabulary"]:
+        say(style("  These use different vocabularies, so their losses are not "
+                  "comparable — a loss is an average over the tokens a model has, "
+                  "and these carve text up differently. Judge by reading.", DIM))
+    else:
+        say(style("  Not every model here has been measured on held-out text yet. "
+                  "Judge by reading.", DIM))
+    return emit(command="compare", **result)
+
+
 def cmd_checkpoints(args) -> int:
     """The saved states a model can be rolled back to or branched from."""
     model = workspace.get(args.name)
@@ -700,6 +765,13 @@ def build_parser() -> argparse.ArgumentParser:
                          help="most rounds an --until run may take (default 20)")
         sub.add_argument("--max-minutes", dest="max_minutes", type=float, default=0.0,
                          help="stop an --until run after this long (default: no limit)")
+        sub.add_argument("--lora", action="store_true",
+                         help="train a small adapter instead of every weight — far less "
+                              "memory, so a bigger base fits. Only for pretrained models; "
+                              "the adapter is folded back in when the lesson ends")
+        sub.add_argument("--lora-rank", dest="lora_rank", type=int, default=16, metavar="N",
+                         help="how much the adapter can change (default 16; 8 is thriftier, "
+                              "64 learns more and costs more)")
         sub.add_argument("--keep", type=int, default=2, metavar="N",
                          help="how many saved states to keep behind this model (default 2); "
                               "each is a full copy of the weights")
@@ -775,6 +847,20 @@ def build_parser() -> argparse.ArgumentParser:
     pack.add_argument("name")
     pack.add_argument("-o", "--out", required=True, metavar="DIR")
     pack.set_defaults(func=cmd_pack)
+
+    compare = subs.add_parser(
+        "compare", help="the same prompt through two or more models, side by side")
+    compare.add_argument("names", nargs="+", metavar="NAME", help="two or more models")
+    compare.add_argument("--prompt", dest="prompt", action="append", default=[],
+                         help="what to say to each of them")
+    compare.add_argument("--tokens", type=int, default=80,
+                         help="how much each one generates (default 80)")
+    compare.add_argument("--temperature", type=float, default=0.8)
+    compare.add_argument("--top-p", dest="top_p", type=float, default=0.95)
+    compare.add_argument("--top-k", dest="top_k", type=int, default=40)
+    compare.add_argument("--seed", type=int, default=0,
+                         help="the same for every model, so the dice are not the difference")
+    compare.set_defaults(func=cmd_compare)
 
     checkpoints = subs.add_parser(
         "checkpoints", help="the saved states a model can go back to or branch from")

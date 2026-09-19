@@ -82,6 +82,7 @@ python -m teacher web "victorian lighthouses" --results 5   # material from the 
 python -m teacher list
 python -m teacher show bookbot
 python -m teacher pack bookbot -o ./for-bench
+python -m teacher compare bookbot bookbot-v2           # two models, same prompt, same seed
 python -m teacher checkpoints bookbot                  # saved states, one per lesson
 python -m teacher branch bookbot bookbot-v2 --at ...   # carry on from one, safely
 python -m teacher rollback bookbot                     # undo the last lesson

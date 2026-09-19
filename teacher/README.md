@@ -104,6 +104,7 @@ of your data.
 | `list` | Every model you have, with size and how much it has been taught |
 | `show NAME` | One model's architecture and its full lesson history |
 | `pack NAME -o DIR` | Copies `model.safetensors`, `config.json` and `tokenizer.json` |
+| `compare A B ...` | The same prompt through two or more models, side by side |
 | `checkpoints NAME` | The saved states this model can go back to or branch from |
 | `branch NAME NEW` | Copies a model, or one of its saved states, into a new model |
 | `rollback NAME` | Undoes the last lesson, restoring the weights saved before it |
@@ -132,6 +133,8 @@ Add `--json` to any command for one machine-readable object instead of prose.
 | `new`, `teach` | `--epochs`, `--batch`, `--rate` | Passes, sequences per step, learning rate |
 | `new`, `teach` | `--until`, `--max-rounds`, `--max-minutes` | Teach in rounds until done, and the limits on that |
 | `new`, `teach` | `--keep N` | How many saved states to keep behind the model (default 2) |
+| `new`, `teach` | `--lora`, `--lora-rank N` | Train a small adapter instead of every weight (pretrained only) |
+| `compare` | `--prompt`, `--tokens`, `--seed`, sampling | What to say, how much, and with which dice |
 | `branch` | `--at STAMP` | Branch from a saved state instead of the current weights |
 | `rollback` | `--to STAMP` | Restore a named saved state instead of the newest |
 | `ask` | `--tokens`, `--temperature`, `--top-p`, `--top-k` | How much to generate and how adventurously |
@@ -396,6 +399,86 @@ tools, which are useful to a capable model you have imported — see
 
 The first three files are all Bench needs, which is why `pack` is a copy rather
 than a conversion.
+
+### Comparing two models
+
+Branching gives you two models from one ancestor. `compare` is how you tell
+which one turned out better:
+
+```bash
+python -m teacher compare bookbot bookbot-v2 --prompt "The keeper" --tokens 60
+```
+
+```
+Prompt  'The keeper'   (seed 0, 60 tokens, temperature 0.8)
+
+bookbot  —  learning words
+  4 lesson(s) · held-out 6.4433 · vocabulary 4,096
+  The keeper of the Lighthouse,, the, in the a the of...
+
+bookbot-v2  —  learning sentences
+  6 lesson(s) · held-out 5.9012 · vocabulary 4,096 · branched from bookbot
+  The keeper walked the stair and the lamp turned through the night...
+
+  Lowest held-out loss: bookbot-v2 (5.9012)
+```
+
+The seed is the same for every model, so a difference in what comes back is a
+difference in the models and not in the dice.
+
+**On comparing the numbers.** A held-out loss is an average over a model's
+vocabulary. Two models that carve text up differently are not being scored on
+the same scale, so `compare` says so and refuses to pick a winner:
+
+```
+  These use different vocabularies, so their losses are not comparable — a loss
+  is an average over the tokens a model has, and these carve text up
+  differently. Judge by reading.
+```
+
+Even with matching vocabularies, each model's loss was measured on *its own*
+held-out text. The comparison only means something if you taught them the same
+material — which is exactly the case after a branch.
+
+### Training a big model on a small machine: LoRA
+
+Fine-tuning normally updates every weight, which needs memory for the weights,
+their gradients and the optimizer's two moments — roughly four copies. LoRA
+freezes the model and trains a small adapter instead:
+
+```bash
+python -m teacher teach seabot --from ./material --lora --lora-rank 8
+```
+
+```
+  adapter:       rank 8 on q_proj, k_proj, v_proj, o_proj
+                 921.6K of 135.44M weights trained (0.68%), then merged in
+```
+
+That is a real run: 921,600 trainable parameters out of 135 million.
+
+**The adapter is folded back in when the lesson ends.** Teacher keeps one
+model per folder, and an adapter on its own would leave that folder unable to
+load — quietly breaking `rollback`, `branch`, `pack` and Bench. What LoRA buys
+here is a cheaper lesson, not a different kind of artefact.
+
+`--lora-rank` sets how much the adapter can change: 8 is thrifty, 16 is the
+default, 64 learns more and costs more.
+
+**Only for pretrained models.** LoRA adapts something that already knows a
+language. A model built here starts from noise, so there is nothing to adapt —
+Teacher refuses and says so rather than wasting your afternoon:
+
+```
+Stopped: LoRA trains a small adapter on top of a model that already knows a
+language. This one was built here, starting from noise — there is nothing to
+adapt yet, so train all of it instead (drop --lora).
+```
+
+LoRA lowers the optimizer and gradient cost, not the activation cost. A long
+sequence or a big batch still needs the memory it always did, which is what
+the preflight check is for — and it now accounts for depth, vocabulary and MLP
+width rather than guessing from a parameter count.
 
 ### Saved states: going back, and branching off
 

@@ -209,6 +209,8 @@ def teach(
     batch_size: int = 8,
     learning_rate: float = 3e-4,
     keep_checkpoints: int = 2,
+    lora: bool = False,
+    lora_rank: int = 16,
     record: bool = True,
     on_log=None,
 ) -> dict:
@@ -243,7 +245,7 @@ def teach(
     eval_set = PackedLMDataset(eval_ids, block) if len(eval_ids) >= block else None
 
     settings = TrainingConfig(
-        method="continued_pretraining",
+        method="lora" if lora else "continued_pretraining",
         epochs=float(epochs),
         batch_size=int(batch_size),
         learning_rate=float(learning_rate),
@@ -258,7 +260,24 @@ def teach(
     )
     settings.validate()
 
-    check = preflight(settings, parameter_count=network.num_parameters())
+    total_parameters = network.num_parameters()
+    lora_stats = _attach_lora(model, network, settings, lora_rank) if lora else None
+    if lora_stats:
+        network = lora_stats.pop("network")
+
+    arch = model.architecture()
+    check = preflight(
+        settings,
+        parameter_count=total_parameters,
+        trainable_parameters=lora_stats["trainable_parameters"] if lora_stats else None,
+        # Depth, vocabulary and MLP width decide the memory a step needs, and
+        # none of them can be read off a parameter count.
+        hidden_size=arch.get("hidden_size"),
+        num_layers=arch.get("num_hidden_layers") or arch.get("num_layers"),
+        num_heads=arch.get("num_attention_heads") or arch.get("num_heads"),
+        intermediate_size=arch.get("intermediate_size"),
+        vocab_size=arch.get("vocab_size"),
+    )
     if not check.ok:
         raise TeacherError(
             "This lesson would not fit in memory:\n  "
@@ -280,6 +299,18 @@ def teach(
     if result.status == "failed":
         raise TeacherError(f"The lesson failed: {result.error}")
 
+    # An adapter on its own would leave the folder unable to load, and would
+    # quietly break rollback, branch, pack and Bench. Fold it in instead: what
+    # LoRA buys here is a cheaper lesson, not a different kind of model.
+    if lora_stats:
+        try:
+            network = network.merge_and_unload()
+        except Exception as exc:  # noqa: BLE001
+            raise TeacherError(
+                f"The lesson ran, but its adapter could not be merged back in: {exc}\n"
+                f"The weights on disk are unchanged."
+            ) from exc
+
     # Keep the previous state until the new one is safely written.
     _snapshot_previous(model, keep_checkpoints)
     network.save_pretrained(str(model.path))
@@ -298,6 +329,8 @@ def teach(
         "device": check.device,
         "status": result.status,
     }
+    if lora_stats:
+        lesson["lora"] = {key: value for key, value in lora_stats.items() if key != "network"}
     if model.kind() != "studio" and model.history().get("base_loss") is None:
         # The first measurement is this model's own starting point.
         first = lesson["held_out_loss"] or lesson["final_loss"]
@@ -307,6 +340,30 @@ def teach(
     if record:
         model.record(lesson)
     return lesson
+
+
+def _attach_lora(model: Model, network, settings, rank: int) -> dict:
+    """Wrap the model in LoRA adapters, or say plainly why that cannot happen."""
+    if model.kind() == "studio":
+        raise TeacherError(
+            "LoRA trains a small adapter on top of a model that already knows a "
+            "language. This one was built here, starting from noise — there is "
+            "nothing to adapt yet, so train all of it instead (drop --lora)."
+        )
+
+    settings.lora.rank = int(rank)
+    settings.lora.alpha = int(rank) * 2
+    settings.lora.validate()
+
+    from ai_studio.core.errors import StudioError
+    from ai_studio.training.lora_trainer import apply_lora
+
+    try:
+        wrapped, stats = apply_lora(network, settings)
+    except StudioError as exc:
+        raise TeacherError(exc.display()) from exc
+    stats["network"] = wrapped
+    return stats
 
 
 def _snapshot_previous(model: Model, keep: int) -> None:
@@ -489,6 +546,64 @@ def talk(model: Model, prompt: str, *, max_new_tokens: int = 120, temperature: f
         "tokens_per_second": len(produced) / elapsed,
         "seconds": elapsed,
     }
+
+
+# ------------------------------------------------------------------ compare
+def compare(models: list[Model], prompt: str, **sampling) -> dict:
+    """Run one prompt through several models under identical sampling.
+
+    The seed is fixed for every model, so a difference in what comes back is a
+    difference in the models and not in the dice.
+    """
+    if len(models) < 2:
+        raise TeacherError("Name at least two models to compare.")
+    sampling.setdefault("seed", 0)
+
+    entries = []
+    for model in models:
+        arch = model.architecture()
+        taught = model.history().get("lessons", [])
+        last = taught[-1] if taught else {}
+        loss = last.get("held_out_loss")
+        label, note, share = judge(model, loss) if taught else ("never taught", "", 1.0)
+
+        text, stats = talk(model, prompt, **sampling)
+        entries.append({
+            "model": model.name,
+            "kind": model.kind(),
+            "base": model.base_repo(),
+            "branched_from": model.history().get("branched_from"),
+            "vocab_size": arch.get("vocab_size"),
+            "lessons": len(taught),
+            "taught_characters": model.taught_characters(),
+            "stage": label,
+            "advice": note,
+            "share": round(share, 4),
+            "held_out_loss": loss,
+            "reply": text,
+            "tokens_per_second": round(stats["tokens_per_second"], 1),
+        })
+
+    same_vocabulary, comparable = comparability(entries)
+    return {
+        "prompt": prompt,
+        "seed": sampling["seed"],
+        "models": entries,
+        "same_vocabulary": same_vocabulary,
+        "losses_comparable": comparable,
+    }
+
+
+def comparability(entries: list[dict]) -> tuple[bool, bool]:
+    """Whether these models' losses mean the same thing.
+
+    A loss is an average over a vocabulary. Two models that carve text up
+    differently are not being scored on the same scale at all, and putting
+    their numbers side by side would invite exactly the wrong conclusion.
+    """
+    same_vocabulary = len({entry.get("vocab_size") for entry in entries}) == 1
+    measured = all(entry.get("held_out_loss") is not None for entry in entries)
+    return same_vocabulary, same_vocabulary and measured
 
 
 # ------------------------------------------------------------------ verdict

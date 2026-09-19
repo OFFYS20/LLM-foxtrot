@@ -228,3 +228,67 @@ def test_perplexity_matches_the_loss():
     assert perplexity(0.0) == pytest.approx(1.0)
     assert perplexity(math.log(50)) == pytest.approx(50, rel=1e-6)
     assert perplexity(None) is None
+
+
+# --------------------------------------------- the estimate against reality
+#: SmolLM2-135M, batch 8, sequence 512, fp32 on CPU. This run was started, ran
+#: one step, and was killed by the kernel at 13.9 GB resident. The estimate
+#: that let it start said 0.7 GB.
+MEASURED = dict(parameter_count=135_436_608, trainable_parameters=921_600,
+                hidden_size=576, num_layers=30, num_heads=9,
+                intermediate_size=1536, vocab_size=49152)
+
+
+def test_the_estimate_is_near_a_run_that_really_did_run_out_of_memory():
+    result = preflight(
+        TrainingConfig(method="lora", batch_size=8, max_sequence_length=512, precision="fp32"),
+        **MEASURED,
+    )
+    estimated_gb = result.estimated_mb / 1024
+    assert 10 < estimated_gb < 20, f"{estimated_gb:.1f} GB is nowhere near the 13.9 GB measured"
+
+
+def test_depth_scales_the_activations():
+    """A parameter count cannot tell you how many layers hold activations.
+
+    Measured on the layers alone: the vocabulary term is a constant that does
+    not multiply with depth, so it is left out here.
+    """
+    from ai_studio.training.config import activation_estimate
+
+    config = TrainingConfig(batch_size=2, max_sequence_length=512)
+    facts = {k: v for k, v in MEASURED.items()
+             if k not in ("vocab_size", "parameter_count", "trainable_parameters")}
+    shallow = activation_estimate(config, parameter_count=1, bytes_per_param=4,
+                                  **{**facts, "num_layers": 6})
+    deep = activation_estimate(config, parameter_count=1, bytes_per_param=4,
+                               **{**facts, "num_layers": 60})
+    assert 9.5 < deep / shallow < 10.5, "activations are held for every layer"
+
+
+def test_depth_changes_what_preflight_reports():
+    shallow = preflight(TrainingConfig(), **{**MEASURED, "num_layers": 6})
+    deep = preflight(TrainingConfig(), **{**MEASURED, "num_layers": 60})
+    assert deep.estimated_mb > shallow.estimated_mb * 3
+
+
+def test_a_big_vocabulary_costs_memory():
+    """Logits are batch x sequence x vocabulary, and the loss makes copies."""
+    small = preflight(TrainingConfig(), **{**MEASURED, "vocab_size": 4096})
+    large = preflight(TrainingConfig(), **{**MEASURED, "vocab_size": 128_000})
+    assert large.estimated_mb > small.estimated_mb
+
+
+def test_an_unknown_architecture_is_still_estimated_pessimistically():
+    """Guessing low is what tells someone a run fits when it does not."""
+    from ai_studio.training.config import activation_estimate
+
+    config = TrainingConfig(batch_size=8, max_sequence_length=512)
+    blind = activation_estimate(config, parameter_count=135_436_608, bytes_per_param=4)
+    assert blind > 1024 ** 3, "a 135M model's activations are gigabytes, not megabytes"
+
+
+def test_gradient_checkpointing_still_lowers_it():
+    plain = preflight(TrainingConfig(gradient_checkpointing=False), **MEASURED)
+    checkpointed = preflight(TrainingConfig(gradient_checkpointing=True), **MEASURED)
+    assert checkpointed.estimated_mb < plain.estimated_mb

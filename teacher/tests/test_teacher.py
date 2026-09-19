@@ -609,3 +609,74 @@ def test_material_reports_a_file_it_could_only_read_in_part(tmp_path, monkeypatc
     material = gather([str(tmp_path)])
     assert material.partial and material.partial[0][1] == 40
     assert "read only in part" in material.summary()
+
+
+# ---------------------------------------------------------------- comparing
+def test_comparing_runs_the_same_prompt_through_each_model(taught):
+    model, _built, _lesson = taught
+    other = workspace.branch(model, "rival")
+    result = lessons.compare([model, other], "the cat", max_new_tokens=8, seed=3)
+
+    assert [entry["model"] for entry in result["models"]] == [model.name, "rival"]
+    assert all(isinstance(entry["reply"], str) for entry in result["models"])
+    assert result["prompt"] == "the cat"
+    assert result["seed"] == 3
+
+
+def test_two_copies_of_one_model_answer_identically_at_the_same_seed(taught):
+    """If the dice differed, a comparison would say nothing about the models."""
+    model, _built, _lesson = taught
+    twin = workspace.branch(model, "twin")
+    result = lessons.compare([model, twin], "the cat", max_new_tokens=12, seed=7)
+    first, second = result["models"]
+    assert first["reply"] == second["reply"]
+
+
+def test_comparing_says_when_the_losses_line_up(taught):
+    model, _built, _lesson = taught
+    other = workspace.branch(model, "samevocab")
+    result = lessons.compare([model, other], "the cat", max_new_tokens=4, seed=1)
+    assert result["same_vocabulary"] is True
+
+
+def test_losses_from_different_vocabularies_are_not_put_side_by_side():
+    """A loss is an average over the tokens a model has. Different tokens,
+    different scale, no comparison."""
+    same, comparable = lessons.comparability([
+        {"vocab_size": 4096, "held_out_loss": 2.1},
+        {"vocab_size": 49152, "held_out_loss": 2.6},
+    ])
+    assert same is False and comparable is False
+
+
+def test_losses_line_up_when_the_vocabulary_matches():
+    same, comparable = lessons.comparability([
+        {"vocab_size": 4096, "held_out_loss": 2.1},
+        {"vocab_size": 4096, "held_out_loss": 1.8},
+    ])
+    assert same is True and comparable is True
+
+
+def test_a_model_never_measured_cannot_be_compared_by_number():
+    same, comparable = lessons.comparability([
+        {"vocab_size": 4096, "held_out_loss": 2.1},
+        {"vocab_size": 4096, "held_out_loss": None},
+    ])
+    assert same is True, "they do share a vocabulary"
+    assert comparable is False, "but one of them has no number"
+
+
+def test_comparing_needs_at_least_two(taught):
+    model, _built, _lesson = taught
+    with pytest.raises(TeacherError, match="at least two"):
+        lessons.compare([model], "the cat")
+
+
+# -------------------------------------------------------------------- LoRA
+def test_lora_is_refused_on_a_model_built_from_noise(taught, material_dir):
+    """There is nothing to adapt yet; the whole model is what needs training."""
+    model, _built, _lesson = taught
+    with pytest.raises(TeacherError) as excinfo:
+        lessons.teach(model, gather([str(material_dir)]), epochs=0.1, lora=True)
+    assert "built here" in str(excinfo.value)
+    assert "--lora" in str(excinfo.value)

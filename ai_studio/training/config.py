@@ -192,14 +192,78 @@ class PreflightResult:
         return f"{head} — needs ~{self.estimated_mb / 1024:.2f} GB, {available} ({self.device})"
 
 
+#: How many tensors of each shape autograd keeps alive per transformer block,
+#: and how many vocabulary-sized copies the loss makes. Calibrated against a
+#: measured run: SmolLM2-135M, batch 8, sequence 512, fp32 on CPU reached
+#: 13.9 GB before the kernel killed it, where the old estimate said 0.7 GB.
+ACTIVATIONS_PER_HIDDEN = 8
+ACTIVATIONS_PER_MLP = 3
+ATTENTION_COPIES = 2
+LOGIT_COPIES = 3
+
+#: Estimates land under the truth — fused kernels, allocator caching and
+#: fragmentation all cost memory this arithmetic cannot see. Erring high costs
+#: a warning nobody had to act on; erring low costs the whole run.
+SAFETY_MARGIN = 1.25
+
+
+def activation_estimate(
+    config: TrainingConfig,
+    *,
+    parameter_count: int,
+    bytes_per_param: int,
+    hidden_size: int | None = None,
+    num_layers: int | None = None,
+    num_heads: int | None = None,
+    intermediate_size: int | None = None,
+    vocab_size: int | None = None,
+) -> float:
+    """Bytes of activations one training step keeps alive.
+
+    Given the architecture this is arithmetic. Without it the answer is a
+    guess, and the guess is deliberately pessimistic: telling someone a run
+    fits when it does not costs them the run.
+    """
+    batch, length = config.batch_size, config.max_sequence_length
+    checkpointing = 0.25 if config.gradient_checkpointing else 1.0
+
+    if not (hidden_size and num_layers):
+        # No architecture to hand. sqrt(parameters) stands in for the hidden
+        # size and a depth of 24 for the layer count, which is the shape of an
+        # ordinary model of that size.
+        hidden_size = hidden_size or max(1, int(parameter_count ** 0.5))
+        num_layers = num_layers or 24
+
+    per_layer = batch * length * hidden_size * ACTIVATIONS_PER_HIDDEN * bytes_per_param
+    per_layer += batch * length * (intermediate_size or hidden_size * 4) \
+        * ACTIVATIONS_PER_MLP * bytes_per_param
+    if num_heads:
+        # Eager attention materialises a score matrix per head; the fused
+        # kernels do not, so this is the cautious reading.
+        per_layer += batch * num_heads * length * length * ATTENTION_COPIES * bytes_per_param
+
+    logits = batch * length * vocab_size * LOGIT_COPIES * bytes_per_param if vocab_size else 0
+    return ((per_layer * num_layers) * checkpointing + logits) * SAFETY_MARGIN
+
+
 def preflight(
     config: TrainingConfig,
     *,
     parameter_count: int,
     model_memory_mb: float | None = None,
     trainable_parameters: int | None = None,
+    hidden_size: int | None = None,
+    num_layers: int | None = None,
+    num_heads: int | None = None,
+    intermediate_size: int | None = None,
+    vocab_size: int | None = None,
 ) -> PreflightResult:
-    """Estimate whether this run fits, and suggest fixes when it does not."""
+    """Estimate whether this run fits, and suggest fixes when it does not.
+
+    Pass the architecture when it is known: depth, vocabulary and MLP width
+    dominate the memory a step needs, and none of them can be read off a
+    parameter count.
+    """
     from ai_studio.hardware.monitor import monitor
 
     snapshot = monitor.snapshot()
@@ -224,12 +288,15 @@ def preflight(
     moments = {"adamw": 2, "adam": 2, "adamw_8bit": 0.5, "sgd": 1, "adafactor": 0.5}.get(config.optimizer, 2)
     optimizer_bytes = trainable * 4 * moments
     gradient_bytes = trainable * bytes_per_param
-    activation_bytes = (
-        config.batch_size
-        * config.max_sequence_length
-        * max(1, parameter_count ** 0.5)
-        * bytes_per_param
-        * (0.25 if config.gradient_checkpointing else 1.0)
+    activation_bytes = activation_estimate(
+        config,
+        parameter_count=parameter_count,
+        bytes_per_param=bytes_per_param,
+        hidden_size=hidden_size,
+        num_layers=num_layers,
+        num_heads=num_heads,
+        intermediate_size=intermediate_size,
+        vocab_size=vocab_size,
     )
     estimated = (weight_bytes + optimizer_bytes + gradient_bytes + activation_bytes) / 1024**2
     if model_memory_mb:
