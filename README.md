@@ -63,7 +63,7 @@ whole thing happen — and only these models run in Bench.
 | Needs | a few hundred KB of text | a few KB is enough |
 | Learns | the language *and* your material | your material |
 | Runs in Bench | yes | no — chat in Teacher |
-| Sizes | `tiny` 1M, `small` 10M, `medium` 100M, `large` 500M, `huge` 1B | whatever you adopt |
+| Sizes | 1M / 10M / 100M / 200M / 500M / 1B | whatever you adopt |
 
 ---
 
@@ -121,6 +121,12 @@ an ability of far larger instruction-tuned models. AI Studio registers
 
 ## Letting an AI assistant do it for you
 
+**[docs/OPERATING.md](docs/OPERATING.md)** is written to be pasted whole into
+ChatGPT or Claude. It covers all three programs, every command and flag, how to
+read the results, and what to tell you when something goes wrong. Paste it,
+then say what you want.
+
+
 If you would rather not run anything yourself, Teacher can write the instructions
 for an assistant that can:
 
@@ -157,7 +163,7 @@ assistant can tell you what went wrong instead of guessing.
 **Every command, on every path, prints exactly one object** — an empty workspace,
 a model that was built but not taught, a failure. Nothing else reaches stdout,
 not even during a live training run, so there is nothing for an assistant to
-misread. Twenty tests hold that contract in place.
+misread. Twenty-five tests hold that contract in place.
 
 ---
 

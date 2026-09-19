@@ -609,6 +609,9 @@ SIZE_PRESETS: dict[str, dict[str, Any]] = {
     "base-100m": dict(
         hidden_size=768, num_layers=11, num_heads=12, max_position_embeddings=1024, vocab_size=32000
     ),
+    "mid-200m": dict(
+        hidden_size=896, num_layers=18, num_heads=14, max_position_embeddings=2048, vocab_size=32000
+    ),
     "medium-300m": dict(
         hidden_size=1024, num_layers=21, num_heads=16, max_position_embeddings=2048, vocab_size=32000
     ),

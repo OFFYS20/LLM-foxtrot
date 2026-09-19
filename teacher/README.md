@@ -122,7 +122,7 @@ Add `--json` to any command for one machine-readable object instead of prose.
 |---|---|---|
 | any | `--json` | One JSON object instead of prose |
 | any | `--version` | Print the version |
-| `new` | `--size` | `tiny`, `small`, `medium`, `large`, `huge` — from scratch only |
+| `new` | `--size` | `1m`, `10m`, `100m`, `200m`, `500m`, `1b` — from scratch only |
 | `new` | `--base` | Start from a pretrained model instead |
 | `new` | `--context` | Context length in tokens, from scratch |
 | `new` | `--replace` | Overwrite a model of the same name |
@@ -170,18 +170,28 @@ One limit: the Bench web page only runs models built from scratch here, so
 
 | Size | Parameters | What it needs |
 |---|---|---|
-| `tiny` | 1M | learns grammar in minutes on a laptop CPU |
-| `small` | 10M | a few MB of text and some patience; still fine on a CPU |
-| `medium` | 100M | a GPU and a library's worth of text |
-| `large` | 500M | a GPU with room to spare and a lot of text |
-| `huge` | 1B | a serious GPU (24GB+) and gigabytes of text |
+| `1m` | 1M | learns grammar in minutes on a laptop CPU |
+| `10m` | 10M | a few MB of text and some patience; still fine on a CPU |
+| `100m` | 100M | a GPU and a library's worth of text |
+| `200m` | 200M | a GPU with 8GB or so, and a lot of text |
+| `500m` | 500M | a GPU with room to spare and a great deal of text |
+| `1b` | 1B | a serious GPU (24GB+) and gigabytes of text |
 
-Start with `tiny`. It will learn the shape of your text — sentence structure,
+The rungs are named after the thing that distinguishes them, because there is
+no sensible adjective between "medium" and "large" and guessing at one is how
+people train the wrong size. The older names still work: `tiny`, `small`,
+`medium`, `large` and `huge` mean 1m, 10m, 100m, 500m and 1b.
+
+The vocabulary is sized to your corpus, so a small corpus builds a model
+somewhat under the tier's name — a vocabulary larger than the text can support
+would waste most of those parameters on embeddings that never get trained.
+
+Start with `1m`. It will learn the shape of your text — sentence structure,
 punctuation, the rhythm of the source — within minutes on a CPU. Each step up
 needs roughly ten times the text and far more compute to be worth the wait; a
 tier too large for your material just memorises it.
 
-Teacher will not start a run that cannot fit. Asking for `huge` on a laptop is
+Teacher will not start a run that cannot fit. Asking for `1b` on a laptop is
 refused before anything happens:
 
 ```

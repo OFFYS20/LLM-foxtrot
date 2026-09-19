@@ -25,13 +25,39 @@ from ai_studio.training.trainer import Trainer, perplexity
 from teacher.material import Material
 from teacher.workspace import Model, TeacherError
 
+#: The ladder, named by the thing that actually distinguishes the rungs. The
+#: old adjectives still work — there is no sensible adjective between "medium"
+#: and "large", and guessing at one is how people end up training the wrong
+#: size.
 SIZES = {
-    "tiny": ("nano-1m", "learns grammar in minutes on a laptop CPU"),
-    "small": ("tiny-10m", "a few MB of text and some patience; still fine on a CPU"),
-    "medium": ("base-100m", "wants a GPU and a library's worth of text"),
-    "large": ("large-500m", "a GPU with room to spare and a lot of text"),
-    "huge": ("huge-1b", "a serious GPU (24GB+) and gigabytes of text"),
+    "1m": ("nano-1m", "learns grammar in minutes on a laptop CPU"),
+    "10m": ("tiny-10m", "a few MB of text and some patience; still fine on a CPU"),
+    "100m": ("base-100m", "wants a GPU and a library's worth of text"),
+    "200m": ("mid-200m", "a GPU with 8GB or so, and a lot of text"),
+    "500m": ("large-500m", "a GPU with room to spare and a great deal of text"),
+    "1b": ("huge-1b", "a serious GPU (24GB+) and gigabytes of text"),
 }
+
+#: What --size used to be called. Kept so older commands and scripts still run.
+SIZE_ALIASES = {
+    "tiny": "1m",
+    "small": "10m",
+    "medium": "100m",
+    "large": "500m",
+    "huge": "1b",
+}
+
+
+def resolve_size(name: str) -> str:
+    """Accept a number or one of the old adjectives."""
+    key = str(name).strip().lower()
+    key = SIZE_ALIASES.get(key, key)
+    if key not in SIZES:
+        raise TeacherError(
+            f"Unknown size '{name}'. Choose one of: {', '.join(SIZES)}"
+            f" (or the older names: {', '.join(SIZE_ALIASES)})."
+        )
+    return key
 
 #: Pretrained starting points that are realistic to fine-tune at home. Anything
 #: on the Hub works with --base, these are just the ones worth suggesting.
@@ -92,8 +118,7 @@ def load_tokenizer(model: Model):
 # ------------------------------------------------------------------ create
 def create(model: Model, material: Material, size: str, *, context: int = 0) -> dict:
     """Build a tokenizer and a fresh, untrained model sized to the material."""
-    if size not in SIZES:
-        raise TeacherError(f"Unknown size '{size}'. Choose one of: {', '.join(SIZES)}")
+    size = resolve_size(size)
     if material.characters < MIN_CHARACTERS:
         raise TeacherError(
             f"Only {material.characters:,} characters of material — too little to learn anything. "

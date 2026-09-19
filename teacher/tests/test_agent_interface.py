@@ -158,11 +158,15 @@ def test_the_readme_does_not_overstate_how_much_holds_this_contract():
     """A count in prose goes stale the moment a test is added or removed."""
     import re
 
+    units = {"": 0, "-one": 1, "-two": 2, "-three": 3, "-four": 4, "-five": 5,
+             "-six": 6, "-seven": 7, "-eight": 8, "-nine": 9}
     words = {"Ten": 10, "Eleven": 11, "Twelve": 12, "Thirteen": 13, "Fourteen": 14,
              "Fifteen": 15, "Sixteen": 16, "Seventeen": 17, "Eighteen": 18,
-             "Nineteen": 19, "Twenty": 20}
+             "Nineteen": 19}
+    for tens, base in (("Twenty", 20), ("Thirty", 30), ("Forty", 40), ("Fifty", 50)):
+        words.update({f"{tens}{suffix}": base + value for suffix, value in units.items()})
     readme = (REPO / "README.md").read_text()
-    claimed = re.search(r"(\w+) tests hold that contract in place", readme)
+    claimed = re.search(r"([\w-]+) tests hold that contract in place", readme)
     assert claimed, "the README no longer makes the claim this test checks"
 
     written = claimed.group(1)
@@ -212,3 +216,53 @@ def test_a_branch_can_be_taught_without_disturbing_its_original():
 def test_an_unknown_saved_state_is_refused_with_the_real_ones_named():
     payload = teacher("rollback", "agent-made", "--to", "19990101-000000", expect_ok=False)
     assert "no saved state" in payload["error"]
+
+
+# ------------------------------------------------- the paste-into-an-assistant doc
+DOC = REPO / "docs" / "OPERATING.md"
+
+
+def test_the_operating_document_exists():
+    assert DOC.is_file(), "docs/OPERATING.md is what people paste into an assistant"
+
+
+def test_it_names_no_command_that_does_not_exist():
+    """An assistant will run exactly what this file tells it to."""
+    import re
+
+    named = set(re.findall(r"python -m teacher (?:--json )?([a-z]+)", DOC.read_text()))
+    real = set(re.findall(r'add_parser\(\s*"(\w+)"',
+                          (REPO / "teacher" / "__main__.py").read_text()))
+    assert named <= real, f"the document names commands that do not exist: {named - real}"
+
+
+def test_it_names_no_flag_that_does_not_exist():
+    import re
+
+    text = DOC.read_text()
+    source = (REPO / "teacher" / "__main__.py").read_text()
+    real = set(re.findall(r'add_argument\(\s*"(--[\w-]+)"', source))
+    real |= set(re.findall(r'"(--[\w-]+)"', source))
+
+    # Flags as they appear in prose and code blocks, ignoring the ones that
+    # belong to pip, venv and ai_studio.
+    theirs = {"--json", "--help"}
+    elsewhere = {"--host", "--port", "--share", "--no-browser"}
+    named = set(re.findall(r"(?<![\w-])(--[a-z][\w-]+)", text))
+    unknown = named - real - theirs - elsewhere
+    assert not unknown, f"the document names flags Teacher does not have: {sorted(unknown)}"
+
+
+def test_it_covers_every_command_someone_would_need():
+    text = DOC.read_text()
+    for command in ("new", "teach", "ask", "list", "show", "compare", "branch",
+                    "rollback", "checkpoints", "web", "pack", "bases", "forget", "ui"):
+        assert f"teacher {command}" in text, f"an assistant is never told about '{command}'"
+
+
+def test_it_names_every_size_that_exists():
+    from teacher import lessons
+
+    text = DOC.read_text()
+    for size in lessons.SIZES:
+        assert f"`{size}`" in text, f"the size '{size}' is not in the document"

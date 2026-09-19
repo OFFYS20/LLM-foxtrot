@@ -421,8 +421,8 @@ THE COMMANDS
   {python} -m teacher --json new NAME --base small --from PATH
       Make a model starting from a pretrained one (best output, needs a
       download). Drop --base to build from scratch instead, which also takes
-      --size tiny|small|medium|large|huge (1M, 10M, 100M, 500M, 1B parameters).
-      Anything past 10M wants a GPU; do not choose one on a laptop.
+      --size 1m|10m|100m|200m|500m|1b. Anything past 10m wants a GPU; do not
+      choose one on a laptop.
 
   {python} -m teacher --json teach NAME --from PATH --until best
       Teach it until it stops improving. Add --epochs N to set the size of one
@@ -488,6 +488,11 @@ WHAT THE RESULTS MEAN
   "held_out_loss" is measured on text it never trained on. Lower is better.
   Falling between lessons means it is still learning; flat means it has
   stopped, and more epochs will not help — it needs more material.
+
+THE FULL VERSION
+  docs/OPERATING.md in this repository covers all three programs — Teacher,
+  the Bench browser page and AI Studio — with every command and flag. If you
+  need something that is not here, read that.
 
 RULES
   - Ask me where my text is before you start. Do not guess a path.
@@ -784,8 +789,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     new = subs.add_parser("new", help="build a new model and teach it its first lesson")
     new.add_argument("name")
-    new.add_argument("--size", default="tiny", choices=list(lessons.SIZES),
-                     help="how big to make it from scratch (default tiny)")
+    new.add_argument("--size", default="1m", metavar="SIZE",
+                     help="how big to make it from scratch: "
+                          + ", ".join(lessons.SIZES)
+                          + " (default 1m; the older names tiny/small/medium/large/huge "
+                            "still work)")
     new.add_argument("--base", metavar="MODEL",
                      help="start from a pretrained model instead of from noise — a shortcut ("
                           + ", ".join(lessons.BASES) + ") or any Hugging Face name")

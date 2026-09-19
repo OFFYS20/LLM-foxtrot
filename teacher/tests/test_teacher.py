@@ -189,19 +189,38 @@ def test_a_seed_repeats_the_same_answer(taught):
 
 
 # -------------------------------------------------------------------- sizes
-def test_the_sizes_climb_and_match_their_advertised_scale():
-    """tiny -> small -> medium -> large -> huge is 1M, 10M, 100M, 500M, 1B."""
+def test_every_size_is_near_the_number_it_is_named_after():
+    """A tier called 200m that builds a 90M model would be a lie in the name."""
     from ai_studio.models.transformer import preset_config
 
-    order = ("tiny", "small", "medium", "large", "huge")
-    counts = [preset_config(lessons.SIZES[key][0]).parameter_count()["total"] for key in order]
+    for key, (preset, _blurb) in lessons.SIZES.items():
+        actual = preset_config(preset).parameter_count()["total"]
+        target = float(key[:-1]) * (1e9 if key.endswith("b") else 1e6)
+        assert 0.5 * target <= actual <= 2.0 * target, (
+            f"'{key}' builds {actual:,} parameters, not near {target:,.0f}"
+        )
+
+
+def test_the_sizes_climb():
+    from ai_studio.models.transformer import preset_config
+
+    counts = [preset_config(preset).parameter_count()["total"]
+              for preset, _ in lessons.SIZES.values()]
     assert counts == sorted(counts), "each tier must be bigger than the last"
 
-    expected = [1e6, 1e7, 1e8, 5e8, 1e9]
-    for key, actual, target in zip(order, counts, expected):
-        assert 0.5 * target <= actual <= 2.0 * target, (
-            f"{key} is {actual:,} parameters, not near {target:,.0f}"
-        )
+
+def test_the_older_size_names_still_work():
+    """Someone's script or notes should not break because the ladder was renamed."""
+    for old_name, current in lessons.SIZE_ALIASES.items():
+        assert lessons.resolve_size(old_name) == current
+        assert current in lessons.SIZES
+    assert lessons.resolve_size("200M") == "200m", "case should not matter"
+
+
+def test_an_unknown_size_names_what_is_on_offer():
+    with pytest.raises(TeacherError) as excinfo:
+        lessons.resolve_size("enormous")
+    assert "200m" in str(excinfo.value) and "tiny" in str(excinfo.value)
 
 
 def test_every_size_names_a_real_preset():
