@@ -14,6 +14,7 @@ from pathlib import Path
 
 import gradio as gr
 
+from ai_studio.core import gradio_compat as compat
 from teacher import lessons, workspace
 from teacher.material import gather
 from teacher.workspace import TeacherError
@@ -92,9 +93,20 @@ def describe(name: str) -> str:
         f"{model.size_bytes() / 1024 ** 2:.0f} MB on disk",
     ]
 
+    if history.get("branched_from"):
+        blocks.append(f"Branched from **{history['branched_from']}** "
+                      f"at `{history['branched_at']}`")
+
+    states = model.saved_states()
+    if states:
+        blocks.append(f"{len(states)} saved state(s) to go back to, newest "
+                      f"`{states[-1]['stamp']}`")
+
     if not taught:
         blocks.append("**Never taught anything** — it will produce noise until you "
-                      "give it a lesson.")
+                      "give it a lesson." if not history.get("branched_from") else
+                      "No lessons *since the branch* — its weights carry everything "
+                      "the original had learned by then.")
         return "\n\n".join(blocks)
 
     last = taught[-1]
@@ -325,16 +337,58 @@ def do_pack(name, destination):
         return friendly(exc)
 
 
-def do_rollback(name):
+def do_branch(name, new_name, stamp):
+    """Carry on from a saved state in a new model, leaving the original alone."""
+    if not name:
+        return "Pick a model first.", *refresh_everything(name)
+    if not (new_name or "").strip():
+        return "Give the copy a name.", *refresh_everything(name)
+    try:
+        source = workspace.get(name)
+        made = workspace.branch(source, new_name, at=(stamp or "").strip() or None)
+    except Exception as exc:  # noqa: BLE001
+        return friendly(exc), *refresh_everything(name)
+
+    where = f"`{stamp}`" if stamp else "its current weights"
+    return (
+        f"Branched **{source.name}** ({where}) into **{made.name}**.\n\n"
+        f"`{made.path}`\n\n"
+        f"**{source.name} is untouched.** Select {made.name} above and teach it "
+        f"as hard as you like — whatever happens, the original is still there.",
+        *refresh_everything(made.name),
+    )
+
+
+def do_rollback(name, stamp=""):
     try:
         if not name:
             raise TeacherError("Choose a model first.")
         model = workspace.get(name)
-        restored = model.rollback()
+        restored = model.rollback(to=(stamp or "").strip() or None)
         return (f"### Rolled back\n\n{model.name} restored from `{restored}`. "
                 f"Its lesson history is unchanged — it still lists what was taught.")
     except Exception as exc:  # noqa: BLE001
         return friendly(exc)
+
+
+def state_choices(name: str | None):
+    """The saved states of the selected model, newest first, for a dropdown."""
+    if not name:
+        return gr.update(choices=[], value=None)
+    try:
+        states = workspace.get(name).saved_states()
+    except TeacherError:
+        return gr.update(choices=[], value=None)
+    labels = [
+        f"{state['stamp']}  ({time.strftime('%H:%M', time.localtime(state['at']))})"
+        for state in reversed(states)
+    ]
+    return gr.update(choices=labels, value=labels[0] if labels else None)
+
+
+def chosen_stamp(label: str | None) -> str:
+    """The stamp out of a dropdown label like "20260919-172927  (17:29)"."""
+    return (label or "").split()[0] if label else ''
 
 
 def do_forget(name, confirm):
@@ -358,7 +412,7 @@ def build() -> gr.Blocks:
     names = model_names()
     first = names[0] if names else None
 
-    with gr.Blocks(title="Teacher", css=CSS, theme=gr.themes.Soft()) as app:
+    with compat.blocks(title="Teacher", css=CSS, theme=gr.themes.Soft()) as app:
         gr.HTML("<p class='teacher-title'>Teacher</p>"
                 "<p class='teacher-sub'>Make a language model, teach it your writing, "
                 "and talk to it. Everything runs on this machine.</p>")
@@ -418,7 +472,7 @@ def build() -> gr.Blocks:
 
                     # ---------------------------------------------- chat
                     with gr.Tab("Chat"):
-                        chat = gr.Chatbot(type="messages", height=380, label=None)
+                        chat = compat.chatbot(height=380, label=None)
                         with gr.Row():
                             message = gr.Textbox(
                                 placeholder="Write something for it to continue…",
@@ -445,9 +499,20 @@ def build() -> gr.Blocks:
                             label="Copy to", placeholder="leave empty to put it beside the model")
                         pack_button = gr.Button("Copy files")
 
-                        gr.Markdown("### Undo the last lesson")
-                        gr.Markdown("Teacher saves the weights before every lesson.")
-                        rollback_button = gr.Button("Roll back")
+                        gr.Markdown("### Saved states")
+                        gr.Markdown(
+                            "Teacher copies the weights aside before every lesson. Go back "
+                            "to one, or branch it into a new model and carry on training "
+                            "*that* — which leaves this one exactly as it is."
+                        )
+                        states = gr.Dropdown(label="Saved state", choices=[], interactive=True)
+                        with gr.Row():
+                            rollback_button = gr.Button("Roll this model back to it")
+                            refresh_states = gr.Button("Refresh", size="sm")
+                        branch_name = gr.Textbox(
+                            label="…or branch it into a new model called",
+                            placeholder="mymodel-v2")
+                        branch_button = gr.Button("Branch")
 
                         gr.Markdown("### Delete")
                         confirm = gr.Checkbox(label="Yes, delete this model and everything it learned")
@@ -541,7 +606,20 @@ def build() -> gr.Blocks:
         clear_chat.click(lambda: [], outputs=chat)
 
         pack_button.click(do_pack, [picker, destination], keep_out)
-        rollback_button.click(do_rollback, picker, keep_out)
+
+        # The saved-state list is per model, and grows with every lesson.
+        app.load(state_choices, picker, states)
+        picker.change(state_choices, picker, states)
+        refresh_states.click(state_choices, picker, states)
+        rollback_button.click(
+            lambda name, label: do_rollback(name, chosen_stamp(label)),
+            [picker, states], keep_out,
+        ).then(state_choices, picker, states)
+        branch_button.click(
+            lambda name, new, label: do_branch(name, new, chosen_stamp(label)),
+            [picker, branch_name, states],
+            [keep_out, picker, picker, picker, card],
+        ).then(state_choices, picker, states)
         forget_button.click(do_forget, [picker, confirm],
                             [keep_out, picker, picker, picker, card])
 
@@ -550,7 +628,8 @@ def build() -> gr.Blocks:
 
 def launch(host: str = "127.0.0.1", port: int = 7861, share: bool = False,
            open_browser: bool = True) -> None:
-    build().queue(default_concurrency_limit=2).launch(
+    compat.launch(
+        build().queue(default_concurrency_limit=2),
         server_name=host, server_port=port, share=share,
         inbrowser=open_browser, quiet=False, show_api=False,
     )

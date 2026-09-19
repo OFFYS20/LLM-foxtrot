@@ -19,6 +19,7 @@ from ai_studio.core import logging as log
 from ai_studio.core.config import get_config
 from ai_studio.core.database import get_db
 from ai_studio.hardware.monitor import monitor
+from ai_studio.core import gradio_compat as compat
 from ai_studio.tools.registry import install_default_tools
 from ai_studio.training.worker import manager
 from ai_studio.ui import (
@@ -83,7 +84,8 @@ def build_app() -> gr.Blocks:
     config = get_config()
     config.ensure_directories()
 
-    with gr.Blocks(title=config.ui.title, theme=theme.theme(), css=theme.CSS, fill_height=True) as demo:
+    with compat.blocks(title=config.ui.title, theme=theme.theme(), css=theme.CSS,
+                       fill_height=True) as demo:
         header = gr.HTML(header_html)
 
         with gr.Tabs():
@@ -161,7 +163,8 @@ def main(argv: list[str] | None = None) -> None:
     startup()
     config = get_config()
     demo = build_app()
-    demo.queue(default_concurrency_limit=4).launch(
+    compat.launch(
+        demo.queue(default_concurrency_limit=4),
         server_name=args.host or config.ui.host,
         server_port=args.port or config.ui.port,
         share=args.share or config.ui.share,

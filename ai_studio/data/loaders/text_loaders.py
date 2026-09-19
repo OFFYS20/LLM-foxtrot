@@ -12,6 +12,9 @@ from typing import Any
 from ai_studio.core.errors import DependencyMissingError, IngestionError
 from ai_studio.data.loaders.base import DocumentLoader, LoadedDocument
 
+#: A row-oriented file is read this far and no further. The whole file is held
+#: in memory as one string, so there has to be a ceiling — but a caller training
+#: on the result has to be told, which is what the "truncated" meta field is for.
 MAX_PREVIEW_ROWS = 2000
 
 
@@ -31,7 +34,7 @@ class TextLoader(DocumentLoader):
     extensions = {".txt", ".text", ".log", ".rst"}
     doc_type = "txt"
 
-    def load(self, path: Path) -> LoadedDocument:
+    def load(self, path: Path, *, max_rows: int | None = None) -> LoadedDocument:
         text = read_text_file(path)
         return LoadedDocument(text=text, title=path.stem, doc_type=self.doc_type)
 
@@ -40,7 +43,7 @@ class MarkdownLoader(DocumentLoader):
     extensions = {".md", ".markdown", ".mdx"}
     doc_type = "markdown"
 
-    def load(self, path: Path) -> LoadedDocument:
+    def load(self, path: Path, *, max_rows: int | None = None) -> LoadedDocument:
         text = read_text_file(path)
         title = path.stem
         # A leading "# Heading" is a better title than the filename.
@@ -64,7 +67,7 @@ class HTMLLoader(DocumentLoader):
     extensions = {".html", ".htm", ".xhtml"}
     doc_type = "html"
 
-    def load(self, path: Path) -> LoadedDocument:
+    def load(self, path: Path, *, max_rows: int | None = None) -> LoadedDocument:
         raw = read_text_file(path)
         return html_to_document(raw, fallback_title=path.stem, doc_type=self.doc_type)
 
@@ -117,7 +120,7 @@ class CSVLoader(DocumentLoader):
     extensions = {".csv", ".tsv"}
     doc_type = "csv"
 
-    def load(self, path: Path) -> LoadedDocument:
+    def load(self, path: Path, *, max_rows: int | None = None) -> LoadedDocument:
         delimiter = "\t" if path.suffix.lower() == ".tsv" else ","
         rows: list[dict[str, Any]] = []
         try:
@@ -125,7 +128,7 @@ class CSVLoader(DocumentLoader):
                 reader = csv_module.DictReader(handle, delimiter=delimiter)
                 columns = reader.fieldnames or []
                 for index, row in enumerate(reader):
-                    if index >= MAX_PREVIEW_ROWS:
+                    if max_rows is not None and index >= max_rows:
                         break
                     rows.append({k: v for k, v in row.items() if k is not None})
         except OSError as exc:
@@ -142,7 +145,9 @@ class CSVLoader(DocumentLoader):
             text="\n\n".join(lines),
             title=path.stem,
             doc_type=self.doc_type,
-            meta={"columns": columns, "rows": max(total_rows, len(rows)), "previewed_rows": len(rows)},
+            meta={"columns": columns, "rows": max(total_rows, len(rows)),
+                  "previewed_rows": len(rows),
+                  "truncated": max(0, max(total_rows, len(rows)) - len(rows))},
             sections=lines,
         )
 
@@ -151,7 +156,7 @@ class JSONLoader(DocumentLoader):
     extensions = {".json", ".jsonl", ".ndjson"}
     doc_type = "json"
 
-    def load(self, path: Path) -> LoadedDocument:
+    def load(self, path: Path, *, max_rows: int | None = None) -> LoadedDocument:
         raw = read_text_file(path)
         records: list[Any] = []
         malformed = 0
@@ -182,7 +187,8 @@ class JSONLoader(DocumentLoader):
                 else:
                     records = [data]
 
-        sections = [_record_to_text(record) for record in records[:MAX_PREVIEW_ROWS]]
+        kept = records if max_rows is None else records[:max_rows]
+        sections = [_record_to_text(record) for record in kept]
         sections = [section for section in sections if section.strip()]
         return LoadedDocument(
             text="\n\n".join(sections),
@@ -190,6 +196,8 @@ class JSONLoader(DocumentLoader):
             doc_type="jsonl" if path.suffix.lower() in {".jsonl", ".ndjson"} else "json",
             meta={
                 "records": len(records),
+                "used_records": len(sections),
+                "truncated": max(0, len(records) - len(kept)),
                 "malformed_lines": malformed,
                 "keys": sorted({k for r in records[:200] if isinstance(r, dict) for k in r})[:40],
             },

@@ -80,8 +80,17 @@ python -m teacher pack bookbot -o ./for-bench
 ```
 
 `--from` takes a file or a folder, and reads `.txt`, `.md`, `.pdf`, `.docx`,
-`.epub`, `.html`, `.csv` and `.json` — a folder is walked recursively. Pass it
-more than once to combine sources, or use `--text "..."` for something short.
+`.epub`, `.html`, `.csv`, `.json` and `.jsonl` — a folder is walked recursively.
+Pass it more than once to combine sources, or use `--text "..."` for something
+short.
+
+**Row files.** A `.csv`, `.json` or `.jsonl` is turned into text one record at a
+time, as `key: value` lines, and *every* record is used — the 2,000-row ceiling
+that the Data Library previews with does not apply to training. The whole file
+is read into memory first, though, so a very large one wants splitting: a few
+hundred MB per file is comfortable, tens of GB in one file is not. If anything
+ever is left out, the lesson says so rather than quietly training on a fraction
+of your data.
 
 ---
 
@@ -95,6 +104,8 @@ more than once to combine sources, or use `--text "..."` for something short.
 | `list` | Every model you have, with size and how much it has been taught |
 | `show NAME` | One model's architecture and its full lesson history |
 | `pack NAME -o DIR` | Copies `model.safetensors`, `config.json` and `tokenizer.json` |
+| `checkpoints NAME` | The saved states this model can go back to or branch from |
+| `branch NAME NEW` | Copies a model, or one of its saved states, into a new model |
 | `rollback NAME` | Undoes the last lesson, restoring the weights saved before it |
 | `forget NAME --yes` | Deletes a model and everything it learned |
 | `ui` | Opens the window — everything above, without the terminal |
@@ -120,6 +131,9 @@ Add `--json` to any command for one machine-readable object instead of prose.
 | `new`, `teach` | `--web`, `--web-results` | Gather material from the web first, and how many pages to read |
 | `new`, `teach` | `--epochs`, `--batch`, `--rate` | Passes, sequences per step, learning rate |
 | `new`, `teach` | `--until`, `--max-rounds`, `--max-minutes` | Teach in rounds until done, and the limits on that |
+| `new`, `teach` | `--keep N` | How many saved states to keep behind the model (default 2) |
+| `branch` | `--at STAMP` | Branch from a saved state instead of the current weights |
+| `rollback` | `--to STAMP` | Restore a named saved state instead of the newest |
 | `ask` | `--tokens`, `--temperature`, `--top-p`, `--top-k` | How much to generate and how adventurously |
 | `ask` | `--seed` | Repeat an exact answer |
 | `web` | `--results`, `--url`, `--list`, `-o` | How many pages, extra addresses, look without downloading, where to keep them |
@@ -383,15 +397,65 @@ tools, which are useful to a capable model you have imported — see
 The first three files are all Bench needs, which is why `pack` is a copy rather
 than a conversion.
 
-### Undoing a lesson
+### Saved states: going back, and branching off
+
+Teacher copies the weights aside before every lesson. Those copies are what
+make experimenting safe — a lesson that ruins a model is one command away from
+being undone, and a promising one is one command away from being explored two
+ways at once.
 
 ```bash
-python -m teacher rollback bookbot
+python -m teacher checkpoints bookbot
 ```
 
-Restores the weights saved before the most recent lesson. The history is left
-alone: it records what happened, and the lesson did happen. Two earlier states
-are kept, so this can be done twice before the older one is gone.
+```
+bookbot — 4 saved state(s)
+  written before each lesson; the newest is what rollback restores
+
+  STAMP             TAKEN                    SIZE
+  20260919-172847   2026-09-19 17:28        5.1MB
+  20260919-172902   2026-09-19 17:29        5.1MB
+  20260919-172915   2026-09-19 17:29        5.1MB
+  20260919-172927   2026-09-19 17:29        5.1MB
+```
+
+**Going back** restores one of them over the model's current weights:
+
+```bash
+python -m teacher rollback bookbot                      # the newest
+python -m teacher rollback bookbot --to 20260919-172902 # a particular one
+```
+
+The history is left alone either way: it records what happened, and the lesson
+did happen.
+
+**Branching** is the other direction — carry on *from* a saved state without
+giving up where you are now:
+
+```bash
+python -m teacher branch bookbot bookbot-v2 --at 20260919-172902
+python -m teacher teach bookbot-v2 --from ./different-material --until best
+```
+
+`bookbot` is not touched at all. You now have two models from the same
+ancestor, trained differently, and you can compare them with `teacher ask` and
+keep whichever is better. Drop `--at` to branch from the current weights.
+
+A branch starts with an empty lesson list, because its weights have not had
+those lessons *in the form the branch holds them*. The original's record is
+kept inside it under `branched_from_history` rather than thrown away, and
+`teacher show` names where it came from.
+
+**How many are kept.** Two by default, because each one is a full copy of the
+weights — four states of a 500M model is 8 GB. Raise it when you are about to
+experiment:
+
+```bash
+python -m teacher teach bookbot --from ./text --epochs 3 --keep 10
+```
+
+In the window this is all under **Keep → Saved states**: pick a state, then
+either *Roll this model back to it* or name a copy and press *Branch*.
 
 ---
 
@@ -447,6 +511,12 @@ fine-tuning screen and an existing base model rather than training from scratch.
 ---
 
 ## Troubleshooting
+
+**`TypeError: Chatbot.__init__() got an unexpected keyword argument 'type'`**
+An older copy of Teacher on Gradio 6. Gradio 6 removed several things Gradio 5
+required, so the window would not open at all. Update the repository — Teacher
+now works on both. There is nothing to install or downgrade.
+
 
 **"Only N characters of material — too little to learn anything"**
 Give it at least a few thousand characters; a few hundred KB is a sensible start.

@@ -100,32 +100,66 @@ class Model:
         except json.JSONDecodeError:
             return {}
 
-    # ---------------------------------------------------------- rollback
+    # ------------------------------------------------------- saved states
     def earlier_states(self) -> list[Path]:
         """Every saved state from before a lesson, oldest first."""
         if not self.checkpoints.exists():
             return []
         return sorted(p for p in self.checkpoints.glob("before-*") if p.is_dir())
 
-    def rollback(self) -> str:
-        """Restore the weights saved before the most recent lesson.
+    def saved_states(self) -> list[dict]:
+        """The saved states, described: when each was taken and how big it is."""
+        described = []
+        for path in self.earlier_states():
+            stamp = path.name.removeprefix("before-")
+            try:
+                when = time.mktime(time.strptime(stamp, "%Y%m%d-%H%M%S"))
+            except ValueError:
+                when = path.stat().st_mtime
+            described.append({
+                "stamp": stamp,
+                "at": when,
+                "bytes": sum(f.stat().st_size for f in path.iterdir() if f.is_file()),
+                "path": str(path),
+            })
+        return described
+
+    def saved_state(self, stamp: str) -> Path:
+        """One saved state by its stamp, with or without the "before-" prefix."""
+        wanted = stamp.strip().removeprefix("before-")
+        for path in self.earlier_states():
+            if path.name.removeprefix("before-") == wanted:
+                return path
+        available = [state["stamp"] for state in self.saved_states()]
+        raise TeacherError(
+            f"{self.name} has no saved state '{stamp}'."
+            + (f" It has: {', '.join(available)}." if available else
+               " It has none — it has not been taught yet.")
+        )
+
+    def rollback(self, to: str | None = None) -> str:
+        """Restore the weights from a saved state — by default the newest.
 
         The lesson history is left alone: it is a record of what happened, and
         the rollback happened too.
         """
-        saved = self.earlier_states()
-        if not saved:
-            raise TeacherError(
-                f"{self.name} has no earlier state saved — it has not been taught yet, "
-                f"or the saved states were removed."
-            )
-        newest = saved[-1]
-        restored = [item for item in newest.iterdir() if item.is_file()]
+        if to:
+            chosen = self.saved_state(to)
+        else:
+            saved = self.earlier_states()
+            if not saved:
+                raise TeacherError(
+                    f"{self.name} has no earlier state saved — it has not been taught yet, "
+                    f"or the saved states were removed."
+                )
+            chosen = saved[-1]
+
+        restored = [item for item in chosen.iterdir() if item.is_file()]
         if not restored:
-            raise TeacherError(f"The saved state {newest.name} is empty.")
+            raise TeacherError(f"The saved state {chosen.name} is empty.")
         for item in restored:
             shutil.copy2(item, self.path / item.name)
-        return newest.name
+        return chosen.name
 
     # -------------------------------------------------------------- copy
     def pack(self, destination: Path) -> list[str]:
@@ -171,6 +205,54 @@ def get(name: str, *, must_exist: bool = True) -> Model:
             )
         raise TeacherError(f"There is no model called '{model.name}'. Try: teacher list")
     return model
+
+
+def branch(source: Model, new_name: str, *, at: str | None = None) -> Model:
+    """Copy a model — or one of its saved states — into a new model of its own.
+
+    This is how you carry on from a checkpoint without risking what you have:
+    the source is not touched at all, so you can train the copy hard, hate the
+    result, and still have the original exactly as it was.
+
+    The copy starts with an empty lesson list, because its weights have not had
+    those lessons in the form the copy holds them. The source's record is kept
+    under ``branched_from_history`` rather than thrown away.
+    """
+    target = get(new_name, must_exist=False)
+    if target.path.exists() and any(target.path.iterdir()):
+        raise TeacherError(
+            f"'{target.name}' already exists. Choose another name, or delete it with: "
+            f"teacher forget {target.name} --yes"
+        )
+    state = source.saved_state(at) if at else None
+    if not source.exists():
+        raise TeacherError(f"{source.name} is missing {', '.join(source.missing())}.")
+
+    target.path.mkdir(parents=True, exist_ok=True)
+    # Everything the model needs to run, including the extra files a pretrained
+    # one carries. The checkpoints and the history belong to the source.
+    for item in source.path.iterdir():
+        if item.is_file() and item.name != HISTORY:
+            shutil.copy2(item, target.path / item.name)
+    # Then the chosen state's weights on top, if one was named.
+    if state:
+        for item in state.iterdir():
+            if item.is_file():
+                shutil.copy2(item, target.path / item.name)
+
+    was = source.history()
+    target.note(
+        name=target.name,
+        created_at=time.time(),
+        lessons=[],
+        branched_from=source.name,
+        branched_at=state.name if state else "its current weights",
+        branched_on=time.time(),
+        base_repo=was.get("base_repo"),
+        base_loss=was.get("base_loss"),
+        branched_from_history=was.get("lessons", []),
+    )
+    return target
 
 
 def every() -> list[Model]:

@@ -47,7 +47,9 @@ That is the whole loop. **Keep** holds the rest: copy the files for Bench, roll
 back a lesson you regret, or delete a model.
 
 Teacher saves the weights before every lesson, so one that made things worse is a
-button — or `teacher rollback NAME` — away from being undone.
+button — or `teacher rollback NAME` — away from being undone. You can also
+**branch** a saved state into a new model and train that instead, which leaves
+the one that already works exactly as it is.
 
 ### From scratch instead
 
@@ -80,6 +82,8 @@ python -m teacher web "victorian lighthouses" --results 5   # material from the 
 python -m teacher list
 python -m teacher show bookbot
 python -m teacher pack bookbot -o ./for-bench
+python -m teacher checkpoints bookbot                  # saved states, one per lesson
+python -m teacher branch bookbot bookbot-v2 --at ...   # carry on from one, safely
 python -m teacher rollback bookbot                     # undo the last lesson
 ```
 
@@ -152,7 +156,7 @@ assistant can tell you what went wrong instead of guessing.
 **Every command, on every path, prints exactly one object** — an empty workspace,
 a model that was built but not taught, a failure. Nothing else reaches stdout,
 not even during a live training run, so there is nothing for an assistant to
-misread. Fourteen tests hold that contract in place.
+misread. Twenty tests hold that contract in place.
 
 ---
 

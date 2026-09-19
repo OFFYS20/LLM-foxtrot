@@ -8,6 +8,7 @@ from ai_studio.core.errors import IngestionError
 from ai_studio.data.loaders.base import DocumentLoader, LoadedDocument
 from ai_studio.data.loaders.rich_loaders import DocxLoader, EPUBLoader, PDFLoader
 from ai_studio.data.loaders.text_loaders import (
+    MAX_PREVIEW_ROWS,
     CSVLoader,
     HTMLLoader,
     JSONLoader,
@@ -42,12 +43,17 @@ def get_loader(path: Path) -> DocumentLoader:
     )
 
 
-def load_document(path: Path) -> LoadedDocument:
-    return get_loader(path).load(path)
+def load_document(path: Path, *, max_rows: int | None = MAX_PREVIEW_ROWS) -> LoadedDocument:
+    """Read one file. ``max_rows=None`` reads every row of a CSV or JSONL.
+
+    The default suits a preview. Training wants the whole file, and passes None.
+    """
+    return get_loader(path).load(path, max_rows=max_rows)
 
 
 __all__ = [
     "LOADERS",
+    "MAX_PREVIEW_ROWS",
     "SUPPORTED_EXTENSIONS",
     "DocumentLoader",
     "LoadedDocument",

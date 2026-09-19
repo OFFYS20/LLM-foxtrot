@@ -174,3 +174,41 @@ def test_the_readme_does_not_overstate_how_much_holds_this_contract():
         f"README.md says {written.lower()} tests hold the JSON contract; "
         f"this file has {real}"
     )
+
+
+# --------------------------------------------------------- saved states
+def test_checkpoints_answers_even_with_none_saved():
+    payload = teacher("checkpoints", "agent-untaught")
+    assert payload["states"] == []
+
+
+def test_checkpoints_lists_what_a_taught_model_can_go_back_to():
+    payload = teacher("checkpoints", "agent-made")
+    assert payload["states"], "a taught model must have something to roll back to"
+    for state in payload["states"]:
+        assert state["stamp"] and state["bytes"] > 0
+
+
+def test_branching_reports_where_the_copy_came_from():
+    payload = teacher("branch", "agent-made", "agent-branch")
+    assert payload["branched_from"] == "agent-made"
+    assert payload["model"] == "agent-branch"
+    assert Path(payload["path"]).is_dir()
+
+
+def test_branching_onto_a_name_in_use_is_reported_as_data():
+    payload = teacher("branch", "agent-made", "agent-branch", expect_ok=False)
+    assert "already exists" in payload["error"]
+
+
+def test_a_branch_can_be_taught_without_disturbing_its_original():
+    before = teacher("show", "agent-made")
+    teacher("teach", "agent-branch", "--from", str(TEXT), "--epochs", "1")
+    after = teacher("show", "agent-made")
+    assert after["lessons"] == before["lessons"]
+    assert after["held_out_loss"] == before["held_out_loss"]
+
+
+def test_an_unknown_saved_state_is_refused_with_the_real_ones_named():
+    payload = teacher("rollback", "agent-made", "--to", "19990101-000000", expect_ok=False)
+    assert "no saved state" in payload["error"]

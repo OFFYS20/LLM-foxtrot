@@ -41,8 +41,13 @@ class DocumentLoader(abc.ABC):
     doc_type: str = "txt"
 
     @abc.abstractmethod
-    def load(self, path: Path) -> LoadedDocument:
-        """Read ``path``. Raise IngestionError/DependencyMissingError on failure."""
+    def load(self, path: Path, *, max_rows: int | None = None) -> LoadedDocument:
+        """Read ``path``. Raise IngestionError/DependencyMissingError on failure.
+
+        ``max_rows`` caps how many rows a row-oriented file contributes;
+        ``None`` means every row, bounded only by memory. Loaders that are not
+        row-oriented ignore it.
+        """
 
     def supports(self, path: Path) -> bool:
         return path.suffix.lower() in self.extensions

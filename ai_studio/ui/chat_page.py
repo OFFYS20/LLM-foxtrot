@@ -6,6 +6,8 @@ from typing import Any
 
 import gradio as gr
 
+from ai_studio.core import gradio_compat as compat
+
 from ai_studio.core.errors import StudioError
 from ai_studio.inference import conversation as convo
 from ai_studio.inference.conversation import SYSTEM_PRESETS, Message
@@ -50,7 +52,7 @@ def render() -> None:
 
     with gr.Row():
         with gr.Column(scale=3):
-            chatbot = gr.Chatbot(type="messages", height=460, show_copy_button=True, label="Conversation")
+            chatbot = compat.chatbot(height=460, show_copy_button=True, label="Conversation")
             with gr.Row():
                 message_box = gr.Textbox(placeholder="Ask something…", scale=6, show_label=False, lines=2)
                 send_button = gr.Button("Send", variant="primary", scale=1)

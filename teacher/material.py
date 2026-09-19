@@ -22,6 +22,10 @@ class Material:
     text: str = ""
     sources: list[str] = field(default_factory=list)
     skipped: list[tuple[str, str]] = field(default_factory=list)
+    #: Files that were read only in part, and by how many rows. A row-oriented
+    #: file has a ceiling on how much is read; losing the rest quietly would be
+    #: the worst kind of bug, because the lesson still looks like it worked.
+    partial: list[tuple[str, int]] = field(default_factory=list)
 
     @property
     def characters(self) -> int:
@@ -31,6 +35,8 @@ class Material:
         parts = [f"{len(self.sources)} source(s)", f"{self.characters:,} characters"]
         if self.skipped:
             parts.append(f"{len(self.skipped)} skipped")
+        if self.partial:
+            parts.append(f"{len(self.partial)} read only in part")
         return ", ".join(parts)
 
 
@@ -68,7 +74,8 @@ def gather(paths: list[str], *, raw_text: str = "", clean: bool = True) -> Mater
 
         for path in candidates:
             try:
-                document = load_document(path)
+                # Training wants every row of a CSV or JSONL, not a preview of it.
+                document = load_document(path, max_rows=None)
             except Exception as exc:  # noqa: BLE001 - one bad file must not stop a lesson
                 material.skipped.append((str(path), str(exc)))
                 continue
@@ -83,6 +90,10 @@ def gather(paths: list[str], *, raw_text: str = "", clean: bool = True) -> Mater
             if not text.strip():
                 material.skipped.append((str(path), "empty after cleaning"))
                 continue
+
+            dropped = int(document.meta.get("truncated") or 0)
+            if dropped:
+                material.partial.append((str(path), dropped))
 
             chunks.append(text.strip())
             material.sources.append(str(path))

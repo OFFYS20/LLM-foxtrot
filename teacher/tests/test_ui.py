@@ -113,3 +113,45 @@ def test_a_failed_search_is_reported_not_raised(monkeypatch):
     monkeypatch.setattr(websearch, "harvest", blocked)
     message, _ = list(ui.do_web("lighthouses", 3, ""))[-1]
     assert "Stopped" in message and "found nothing" in message
+
+
+# ----------------------------------------------- Gradio 5 and 6 both work
+def test_the_chat_box_is_built_for_whichever_gradio_is_installed():
+    """Gradio 6 removed Chatbot(type=...); 5 needs it. Both must open."""
+    import gradio as gr
+
+    from ai_studio.core import gradio_compat as compat
+
+    with gr.Blocks():
+        box = compat.chatbot(height=380, label=None)
+    assert box is not None
+
+
+def test_arguments_this_gradio_does_not_take_are_dropped():
+    from ai_studio.core import gradio_compat as compat
+
+    def sample(alpha, beta=2):
+        return alpha, beta
+
+    assert compat.accepted(sample, {"alpha": 1, "gamma": 3}) == {"alpha": 1}
+
+
+def test_a_function_taking_anything_keeps_everything():
+    from ai_studio.core import gradio_compat as compat
+
+    def sample(**kwargs):
+        return kwargs
+
+    given = {"anything": 1, "at": 2, "all": 3}
+    assert compat.accepted(sample, given) == given
+
+
+def test_styling_goes_where_this_version_wants_it():
+    from ai_studio.core import gradio_compat as compat
+
+    app = compat.blocks(title="T", css="body {}", theme=None)
+    deferred = getattr(app, "_teacher_deferred_styling", {})
+    if compat.STYLE_AT_LAUNCH:
+        assert "css" in deferred, "Gradio 6 takes css at launch()"
+    else:
+        assert deferred == {}, "Gradio 5 takes css on the constructor"

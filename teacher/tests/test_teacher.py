@@ -406,6 +406,129 @@ def test_rollback_without_a_saved_state_is_refused(tmp_path):
     assert "no earlier state" in str(excinfo.value)
 
 
+# ------------------------------------------------------- saved states
+def test_every_lesson_leaves_a_state_behind(material_dir):
+    model = workspace.get("stateful", must_exist=False)
+    lessons.create(model, gather([str(material_dir)]), "tiny", context=64)
+    for _ in range(3):
+        lessons.teach(model, gather([str(material_dir)]), epochs=1.0, batch_size=8,
+                      keep_checkpoints=5)
+
+    states = model.saved_states()
+    assert len(states) == 3
+    assert [state["stamp"] for state in states] == sorted(state["stamp"] for state in states), \
+        "oldest first, so the newest is what rollback takes"
+    for state in states:
+        assert state["bytes"] > 0 and state["at"] > 0
+
+
+def test_only_as_many_states_as_asked_for_are_kept(material_dir):
+    """Each state is a full copy of the weights, so they cannot all be kept."""
+    model = workspace.get("thrifty", must_exist=False)
+    lessons.create(model, gather([str(material_dir)]), "tiny", context=64)
+    for _ in range(4):
+        lessons.teach(model, gather([str(material_dir)]), epochs=1.0, batch_size=8,
+                      keep_checkpoints=2)
+    assert len(model.saved_states()) == 2
+
+
+def test_a_state_can_be_found_by_its_stamp(material_dir):
+    model = workspace.get("stateful", must_exist=True)
+    stamp = model.saved_states()[0]["stamp"]
+    assert model.saved_state(stamp).name == f"before-{stamp}"
+    assert model.saved_state(f"before-{stamp}").name == f"before-{stamp}"
+
+
+def test_an_unknown_stamp_lists_the_ones_that_exist(material_dir):
+    model = workspace.get("stateful", must_exist=True)
+    with pytest.raises(TeacherError) as excinfo:
+        model.saved_state("19990101-000000")
+    assert model.saved_states()[0]["stamp"] in str(excinfo.value)
+
+
+def test_rolling_back_to_a_named_state_goes_further_than_one_lesson(material_dir):
+    model = workspace.get("stateful", must_exist=True)
+    states = model.saved_states()
+    oldest = states[0]["stamp"]
+    expected = (model.saved_state(oldest) / "model.safetensors").read_bytes()
+
+    assert (model.path / "model.safetensors").read_bytes() != expected
+    model.rollback(to=oldest)
+    assert (model.path / "model.safetensors").read_bytes() == expected
+
+
+# ---------------------------------------------------------------- branching
+def test_branching_copies_the_weights_as_they_are(material_dir):
+    source = workspace.get("stateful", must_exist=True)
+    copy = workspace.branch(source, "stateful-now")
+    assert copy.exists()
+    assert (copy.path / "model.safetensors").read_bytes() == \
+        (source.path / "model.safetensors").read_bytes()
+
+
+def test_branching_at_a_state_takes_that_state_not_the_current_weights(material_dir):
+    source = workspace.get("stateful", must_exist=True)
+    stamp = source.saved_states()[1]["stamp"]
+    copy = workspace.branch(source, "stateful-then", at=stamp)
+    assert (copy.path / "model.safetensors").read_bytes() == \
+        (source.saved_state(stamp) / "model.safetensors").read_bytes()
+
+
+def test_training_a_branch_leaves_the_original_exactly_as_it_was(material_dir):
+    """The whole point: experiment on the copy without risking the original."""
+    source = workspace.get("stateful", must_exist=True)
+    before = (source.path / "model.safetensors").read_bytes()
+    before_lessons = len(source.history()["lessons"])
+
+    copy = workspace.branch(source, "stateful-risky")
+    lessons.teach(copy, gather([str(material_dir)]), epochs=1.0, batch_size=8)
+
+    assert (source.path / "model.safetensors").read_bytes() == before
+    assert len(source.history()["lessons"]) == before_lessons
+    assert (copy.path / "model.safetensors").read_bytes() != before
+
+
+def test_a_branch_carries_its_provenance_and_keeps_the_old_record(material_dir):
+    source = workspace.get("stateful", must_exist=True)
+    copy = workspace.branch(source, "stateful-traced", at=source.saved_states()[0]["stamp"])
+    history = copy.history()
+
+    assert history["branched_from"] == source.name
+    assert history["branched_at"].startswith("before-")
+    assert history["lessons"] == [], "its weights have not had those lessons in this form"
+    assert history["branched_from_history"] == source.history()["lessons"], \
+        "the original's record is kept, not discarded"
+
+
+def test_a_branch_does_not_carry_the_originals_saved_states(material_dir):
+    """They belong to the original, and copying them would double the disk cost."""
+    source = workspace.get("stateful", must_exist=True)
+    copy = workspace.branch(source, "stateful-clean")
+    assert copy.saved_states() == []
+
+
+def test_branching_onto_an_existing_name_is_refused(material_dir):
+    source = workspace.get("stateful", must_exist=True)
+    with pytest.raises(TeacherError, match="already exists"):
+        workspace.branch(source, "stateful-now")
+
+
+def test_branching_a_pretrained_model_takes_the_files_it_needs_to_run(tmp_path):
+    """A pretrained model carries more than the three files a scratch one does."""
+    source = workspace.get("adopted-ish", must_exist=False)
+    source.path.mkdir(parents=True, exist_ok=True)
+    for name in ("model.safetensors", "config.json", "tokenizer.json",
+                 "tokenizer_config.json", "generation_config.json", "special_tokens_map.json"):
+        (source.path / name).write_text("{}" if name.endswith(".json") else "weights")
+    source.note(base_repo="somewhere/small", base_loss=2.5)
+
+    copy = workspace.branch(source, "adopted-copy")
+    assert sorted(f.name for f in copy.path.iterdir() if f.is_file()) == sorted(
+        ["model.safetensors", "config.json", "tokenizer.json", "tokenizer_config.json",
+         "generation_config.json", "special_tokens_map.json", "history.json"])
+    assert copy.history()["base_loss"] == 2.5, "its stage scale must come with it"
+
+
 # --------------------------------------------------------------------- pack
 def test_pack_copies_exactly_what_the_web_page_needs(taught, tmp_path):
     model, _built, _lesson = taught
@@ -428,3 +551,61 @@ def test_pack_refuses_an_incomplete_model(tmp_path):
 def test_listing_finds_the_models_it_made(taught):
     names = {model.name for model in workspace.every()}
     assert "pupil" in names
+
+
+# ------------------------------------------------------- row-oriented files
+def records_file(folder, count: int, name: str = "rows.jsonl"):
+    path = folder / name
+    path.write_text(
+        "\n".join(
+            '{"first_name": "Name%d", "city": "City%d", "note": "a line of prose %d"}' % (n, n, n)
+            for n in range(count)
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_every_record_of_a_jsonl_file_is_learned_from(tmp_path):
+    """Training on a preview of the data would be the worst kind of bug: the
+    lesson still looks like it worked."""
+    from ai_studio.data.loaders import MAX_PREVIEW_ROWS
+
+    records_file(tmp_path, MAX_PREVIEW_ROWS + 500)
+    material = gather([str(tmp_path)])
+    assert material.text.count("first_name:") == MAX_PREVIEW_ROWS + 500
+    assert material.partial == [], "nothing was left out, so nothing to report"
+
+
+def test_a_csv_is_read_in_full_too(tmp_path):
+    from ai_studio.data.loaders import MAX_PREVIEW_ROWS
+
+    rows = MAX_PREVIEW_ROWS + 300
+    (tmp_path / "rows.csv").write_text(
+        "name,city\n" + "\n".join(f"Name{n},City{n}" for n in range(rows)), encoding="utf-8")
+    assert gather([str(tmp_path)]).text.count("name:") == rows
+
+
+def test_a_previewed_file_says_how_much_was_left_out(tmp_path):
+    """The Data Library still previews; what it must not do is stay quiet."""
+    from ai_studio.data.loaders import MAX_PREVIEW_ROWS, load_document
+
+    path = records_file(tmp_path, MAX_PREVIEW_ROWS + 42)
+    document = load_document(path)
+    assert document.meta["records"] == MAX_PREVIEW_ROWS + 42
+    assert document.meta["used_records"] == MAX_PREVIEW_ROWS
+    assert document.meta["truncated"] == 42
+
+
+def test_material_reports_a_file_it_could_only_read_in_part(tmp_path, monkeypatch):
+    import teacher.material as material_module
+    from ai_studio.data.loaders import load_document
+
+    records_file(tmp_path, 50)
+    # Force a ceiling, as the Data Library's default would.
+    monkeypatch.setattr(material_module, "load_document",
+                        lambda path, **kw: load_document(path, max_rows=10))
+
+    material = gather([str(tmp_path)])
+    assert material.partial and material.partial[0][1] == 40
+    assert "read only in part" in material.summary()

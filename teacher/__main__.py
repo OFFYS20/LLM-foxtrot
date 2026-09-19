@@ -76,6 +76,11 @@ def collect(args) -> "gather":
         # rather than "<your text>".
         args.source = sources
     material = gather(sources, raw_text=args.text or "", clean=not args.raw)
+    if material.partial:
+        say(style(f"  read only in part — a row file has a ceiling on how much is read:", DIM))
+        for path, dropped in material.partial[:5]:
+            say(style(f"    {path} — {dropped:,} row(s) left out", DIM))
+        say(style("    split the file into smaller ones to use all of it", DIM))
     if material.skipped:
         say(style(f"  skipped {len(material.skipped)} item(s):", DIM))
         for path, why in material.skipped[:5]:
@@ -179,6 +184,7 @@ def run_lesson(model, material, args) -> int:
         epochs=args.epochs,
         batch_size=args.batch,
         learning_rate=args.rate,
+        keep_checkpoints=getattr(args, "keep", 2),
         on_log=on_log,
     )
 
@@ -215,6 +221,7 @@ def run_until(model, material, args) -> int:
         max_minutes=args.max_minutes,
         batch_size=args.batch,
         learning_rate=args.rate,
+        keep_checkpoints=getattr(args, "keep", 2),
         on_round=on_round,
     )
 
@@ -418,9 +425,17 @@ THE COMMANDS
   {python} -m teacher --json show NAME
       Architecture, every lesson, and how far along it is.
 
-  {python} -m teacher --json rollback NAME
-      Undo the last lesson if it made the model worse. Two earlier states are
-      kept, so this works at most twice in a row.
+  {python} -m teacher --json rollback NAME [--to STAMP]
+      Undo the last lesson if it made the model worse, or go back to a named
+      saved state. Two are kept by default; --keep N on a lesson keeps more.
+
+  {python} -m teacher --json checkpoints NAME
+      The saved states this model can go back to or branch from, newest last.
+
+  {python} -m teacher --json branch NAME NEW-NAME [--at STAMP]
+      Copy the model, or one of its saved states, into a new model. The
+      original is not touched, so this is how to try a different training run
+      without risking what already works.
 
   {python} -m teacher --json web "SOMETHING" --results 5
       Search the web, read what it finds, and save each page as a text file in
@@ -466,6 +481,9 @@ RULES
     Do not retry the same thing.
   - Training takes minutes to hours. Say so before starting a long one.
   - If a lesson raises the held-out loss, say so and offer to roll it back.
+  - Before trying something that might not work — much more material, a very
+    different setting — branch the model first and train the branch. Then
+    neither of us has to undo anything.
   - Tell me the stage and whether it is still improving. Skip the numbers
     unless I ask.
 """
@@ -531,12 +549,20 @@ def cmd_show(args) -> int:
     say(f"  context     {arch.get('max_position_embeddings')} tokens")
     say(f"  vocabulary  {arch.get('vocab_size'):,} tokens")
     say(f"  on disk     {fmt_bytes(model.size_bytes())}")
+    if history.get("branched_from"):
+        say(f"  branched    from {history['branched_from']} at {history['branched_at']}")
+    states = model.saved_states()
+    if states:
+        say(f"  saved       {len(states)} state(s), newest {states[-1]['stamp']}")
 
     if not lessons_taught:
         say("\n  Never taught anything — it will produce noise.")
         return emit(command="show", model=model.name, kind=model.kind(),
                     base=model.base_repo(), architecture=arch, lessons=0,
-                    stage="never taught", path=str(model.path))
+                    stage="never taught", path=str(model.path),
+                    saved_states=[state["stamp"] for state in states],
+                    branched_from=history.get("branched_from"),
+                    branched_at=history.get("branched_at"))
 
     say(f"\n  {len(lessons_taught)} lesson(s), {fmt_count(model.taught_characters())} characters total")
     for index, lesson in enumerate(lessons_taught[-8:], start=max(1, len(lessons_taught) - 7)):
@@ -554,7 +580,10 @@ def cmd_show(args) -> int:
     return emit(command="show", model=model.name, kind=model.kind(), base=model.base_repo(),
                 architecture=arch, lessons=len(lessons_taught), stage=label, advice=note,
                 share=round(share, 4), held_out_loss=last.get("held_out_loss"),
-                taught_characters=model.taught_characters(), path=str(model.path))
+                taught_characters=model.taught_characters(), path=str(model.path),
+                saved_states=[state["stamp"] for state in states],
+                branched_from=history.get("branched_from"),
+                branched_at=history.get("branched_at"))
 
 
 def cmd_pack(args) -> int:
@@ -568,12 +597,54 @@ def cmd_pack(args) -> int:
     return emit(command="pack", model=model.name, destination=str(destination), files=copied)
 
 
+def cmd_checkpoints(args) -> int:
+    """The saved states a model can be rolled back to or branched from."""
+    model = workspace.get(args.name)
+    states = model.saved_states()
+    if not states:
+        say(f"{model.name} has no saved states yet.")
+        say(style("  One is written before every lesson. Teach it something first.", DIM))
+        return emit(command="checkpoints", model=model.name, states=[], keep=None)
+
+    say(style(f"{model.name} — {len(states)} saved state(s)", BOLD))
+    say(style("  written before each lesson; the newest is what rollback restores\n", DIM))
+    say(f"  {'STAMP':<18}{'TAKEN':<20}{'SIZE':>9}")
+    for state in states:
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(state["at"]))
+        say(f"  {state['stamp']:<18}{when:<20}{fmt_bytes(state['bytes']):>9}")
+
+    newest = states[-1]["stamp"]
+    say(style(f"\n  Go back:    python -m teacher rollback {model.name} --to {newest}", DIM))
+    say(style(f"  Branch it:  python -m teacher branch {model.name} {model.name}-v2 "
+              f"--at {newest}", DIM))
+    say(style("\n  Only the last few are kept. Pass --keep N to a lesson to hold more.", DIM))
+    return emit(command="checkpoints", model=model.name, states=states)
+
+
+def cmd_branch(args) -> int:
+    """Carry on from a saved state in a new model, leaving the original alone."""
+    source = workspace.get(args.name)
+    made = workspace.branch(source, args.new_name, at=args.at)
+    from_what = args.at or "its current weights"
+
+    say(f"Branched {source.name} ({from_what}) into {style(made.name, BOLD)}.")
+    say(style(f"  {made.path}", DIM))
+    say(style(f"  {source.name} is untouched — train {made.name} as hard as you like.", DIM))
+    say(style(f"  Its lesson list starts empty; {source.name}'s record is kept inside it.", DIM))
+    say(f"\n  Teach it:  python -m teacher teach {made.name} --from <material> --until best")
+    return emit(command="branch", model=made.name, branched_from=source.name,
+                branched_at=from_what, path=str(made.path))
+
+
 def cmd_rollback(args) -> int:
     model = workspace.get(args.name)
     saved = model.earlier_states()
-    restored = model.rollback()
-    say(f"Rolled {model.name} back to the state saved before its last lesson ({restored}).")
+    restored = model.rollback(to=args.to)
+    which = f"the state saved at {args.to}" if args.to else "the state saved before its last lesson"
+    say(f"Rolled {model.name} back to {which} ({restored}).")
     say(style("  Its history still lists every lesson — that is a record of what happened.", DIM))
+    if not args.to and len(saved) > 1:
+        say(style(f"  Earlier ones are still there: python -m teacher checkpoints {model.name}", DIM))
     return emit(command="rollback", model=model.name, restored_from=restored,
                 states_left=len(saved) - 1)
 
@@ -629,6 +700,9 @@ def build_parser() -> argparse.ArgumentParser:
                          help="most rounds an --until run may take (default 20)")
         sub.add_argument("--max-minutes", dest="max_minutes", type=float, default=0.0,
                          help="stop an --until run after this long (default: no limit)")
+        sub.add_argument("--keep", type=int, default=2, metavar="N",
+                         help="how many saved states to keep behind this model (default 2); "
+                              "each is a full copy of the weights")
 
     new = subs.add_parser("new", help="build a new model and teach it its first lesson")
     new.add_argument("name")
@@ -702,9 +776,25 @@ def build_parser() -> argparse.ArgumentParser:
     pack.add_argument("-o", "--out", required=True, metavar="DIR")
     pack.set_defaults(func=cmd_pack)
 
+    checkpoints = subs.add_parser(
+        "checkpoints", help="the saved states a model can go back to or branch from")
+    checkpoints.add_argument("name")
+    checkpoints.set_defaults(func=cmd_checkpoints)
+
+    branch = subs.add_parser(
+        "branch", help="copy a model, or one of its saved states, into a new model")
+    branch.add_argument("name", help="the model to branch from")
+    branch.add_argument("new_name", metavar="new-name", help="what to call the copy")
+    branch.add_argument("--at", metavar="STAMP",
+                        help="branch from this saved state instead of the current weights "
+                             "(see: teacher checkpoints NAME)")
+    branch.set_defaults(func=cmd_branch)
+
     rollback = subs.add_parser(
         "rollback", help="undo the last lesson, restoring the weights saved before it")
     rollback.add_argument("name")
+    rollback.add_argument("--to", metavar="STAMP",
+                          help="restore this saved state instead of the newest")
     rollback.set_defaults(func=cmd_rollback)
 
     forget = subs.add_parser("forget", help="delete a model and everything it learned")

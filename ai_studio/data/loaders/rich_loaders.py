@@ -13,7 +13,7 @@ class PDFLoader(DocumentLoader):
     extensions = {".pdf"}
     doc_type = "pdf"
 
-    def load(self, path: Path) -> LoadedDocument:
+    def load(self, path: Path, *, max_rows: int | None = None) -> LoadedDocument:
         try:
             import pymupdf as fitz
         except ImportError:
@@ -78,7 +78,7 @@ class DocxLoader(DocumentLoader):
     extensions = {".docx"}
     doc_type = "docx"
 
-    def load(self, path: Path) -> LoadedDocument:
+    def load(self, path: Path, *, max_rows: int | None = None) -> LoadedDocument:
         try:
             import docx
         except ImportError as exc:
@@ -127,7 +127,7 @@ class EPUBLoader(DocumentLoader):
     extensions = {".epub"}
     doc_type = "epub"
 
-    def load(self, path: Path) -> LoadedDocument:
+    def load(self, path: Path, *, max_rows: int | None = None) -> LoadedDocument:
         try:
             import ebooklib
             from ebooklib import epub
