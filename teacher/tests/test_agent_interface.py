@@ -135,3 +135,20 @@ def test_nothing_but_the_object_reaches_stdout():
     )
     payload = json.loads(proc.stdout)
     assert proc.stdout.strip() == json.dumps(payload, indent=2, default=str).strip()
+
+
+# ------------------------------------------------------------- the web command
+def test_asking_for_nothing_from_the_web_is_refused_as_data():
+    payload = teacher("web", expect_ok=False)
+    assert "error" in payload and payload["command"] == "web"
+
+
+def test_an_address_on_this_machine_is_refused_without_a_request_leaving():
+    payload = teacher("web", "--url", "http://127.0.0.1:9/secrets", expect_ok=False)
+    assert "not the web" in payload["error"], payload
+
+
+def test_the_guide_tells_an_assistant_the_web_is_there():
+    guide = teacher("guide")["guide"]
+    assert "web" in guide
+    assert "--web" in guide or "--json web" in guide

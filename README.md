@@ -61,7 +61,7 @@ whole thing happen — and only these models run in Bench.
 | Needs | a few hundred KB of text | a few KB is enough |
 | Learns | the language *and* your material | your material |
 | Runs in Bench | yes | no — chat in Teacher |
-| Sizes | 1M / 10M / 100M / 1B | whatever you adopt |
+| Sizes | 1M / 10M / 100M / 500M / 1B | whatever you adopt |
 
 ---
 
@@ -76,6 +76,7 @@ python -m teacher bases                                # pretrained models to st
 python -m teacher new bookbot --base small --from ./my-books
 python -m teacher teach bookbot --from ./more --until best
 python -m teacher ask bookbot "once upon a"
+python -m teacher web "victorian lighthouses" --results 5   # material from the web
 python -m teacher list
 python -m teacher show bookbot
 python -m teacher pack bookbot -o ./for-bench
@@ -84,6 +85,20 @@ python -m teacher rollback bookbot                     # undo the last lesson
 
 `--from` takes a file or a folder and reads `.txt`, `.md`, `.pdf`, `.docx`,
 `.epub`, `.html`, `.csv` and `.json`. Full reference: **[teacher/README.md](teacher/README.md)**.
+
+### No text of your own?
+
+`teacher web` searches, reads what it finds and saves each page as a text file —
+or `--web "something"` on `new` and `teach` does it in one step. Every file keeps
+the address it came from and the date, because a page you found is someone
+else's writing under someone else's terms. It reads only what a search returned
+or you named, never links inside a page, and refuses anything on this machine or
+its local network. The same thing is in the window, under **Text → …or fetch it
+from the web**.
+
+This gathers *material*. It does not make a small model able to browse — that is
+an ability of far larger instruction-tuned models. AI Studio registers
+`web_search` and `read_web_page` as tools for a capable model you have imported.
 
 ---
 
@@ -242,6 +257,8 @@ model. If training were simulated, they would fail.
 ## Licence
 
 The software is MIT. **That covers this application only.** Model weights,
-datasets and benchmark splits you download carry their own terms — a licence here
-is not permission to use or redistribute someone else's work. Teacher and AI
-Studio record what each model declares and show it; neither assumes anything.
+datasets, benchmark splits and web pages you download carry their own terms — a
+licence here is not permission to use or redistribute someone else's work.
+Teacher and AI Studio record what each model declares and show it, and every
+page fetched from the web is saved with its address and the date; neither
+assumes anything beyond that.

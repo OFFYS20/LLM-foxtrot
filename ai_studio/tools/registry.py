@@ -57,10 +57,25 @@ class ToolRegistry:
     def schemas(self, *, enabled_only: bool = True) -> list[dict[str, Any]]:
         return [tool.schema() for tool in self.list(enabled_only=enabled_only)]
 
-    def call(self, name: str, arguments: dict[str, Any] | str | None = None) -> dict[str, Any]:
+    def call(
+        self,
+        name: str,
+        arguments: dict[str, Any] | str | None = None,
+        *,
+        confirmed: bool = False,
+    ) -> dict[str, Any]:
         tool = self.get(name)
         if not tool.enabled:
             raise ValidationError(f"Tool {name!r} is disabled.")
+        if tool.requires_confirmation and not confirmed:
+            # Declaring a tool dangerous and then running it anyway would make
+            # the flag decoration. The caller has to say a person agreed.
+            return {
+                "ok": False,
+                "tool": name,
+                "needs_confirmation": True,
+                "error": f"{name!r} runs only once someone confirms it.",
+            }
         if isinstance(arguments, str):
             try:
                 arguments = json.loads(arguments)
@@ -85,6 +100,7 @@ def install_default_tools() -> ToolRegistry:
     from ai_studio.tools.calculator import calculate
     from ai_studio.tools.document_search import search_documents
     from ai_studio.tools.python_sandbox import run_python
+    from ai_studio.tools.web_search import read_web_page, web_search
 
     registry.register(
         Tool(
@@ -114,6 +130,36 @@ def install_default_tools() -> ToolRegistry:
             ),
             handler=run_python,
             parameters={"code": {"type": "string", "description": "Python source"}},
+            requires_confirmation=True,
+        )
+    )
+    registry.register(
+        Tool(
+            name="web_search",
+            description=(
+                "Search the web and return titles, addresses and snippets. "
+                "Leaves this machine: the query goes to a search engine."
+            ),
+            handler=web_search,
+            parameters={
+                "query": {"type": "string", "description": "What to search for"},
+                "top_k": {"type": "integer", "description": "How many results (default 5)"},
+            },
+            requires_confirmation=True,
+        )
+    )
+    registry.register(
+        Tool(
+            name="read_web_page",
+            description=(
+                "Fetch one web page and return its readable text. "
+                "http(s) only; addresses on this machine or its network are refused."
+            ),
+            handler=read_web_page,
+            parameters={
+                "url": {"type": "string", "description": "The page address"},
+                "max_chars": {"type": "integer", "description": "How much text (default 4000)"},
+            },
             requires_confirmation=True,
         )
     )

@@ -79,3 +79,37 @@ def test_material_from_a_folder_and_pasted_text_combine(tmp_path):
     assert material.characters > 0
     assert "pasted words here" in material.text
     assert "alpha beta" in material.text
+
+
+# ------------------------------------------------------- gathering from the web
+def test_the_web_panel_says_what_it_needs_when_given_nothing():
+    message, _ = next(ui.do_web("", 5, ""))
+    assert "search for" in message
+
+
+def test_a_finished_harvest_points_the_folder_box_at_what_it_kept(monkeypatch, tmp_path):
+    from ai_studio.data.web import Page
+    from teacher import websearch
+
+    harvest = websearch.Harvest(query="lighthouses", pages=[
+        Page(url="https://a.test/1", title="A page", text="word " * 300),
+    ])
+    monkeypatch.setattr(websearch, "harvest", lambda *a, **kw: harvest)
+    monkeypatch.setattr(websearch, "folder_for", lambda query, root: tmp_path / "kept")
+
+    message, folder = list(ui.do_web("lighthouses", 3, ""))[-1]
+    assert folder == str(tmp_path / "kept")
+    assert "1 page(s)" in message
+    assert "https://a.test/1" in message
+    assert (tmp_path / "kept" / "01-a-page.txt").exists()
+
+
+def test_a_failed_search_is_reported_not_raised(monkeypatch):
+    from teacher import websearch
+
+    def blocked(*args, **kwargs):
+        raise TeacherError("The search found nothing.")
+
+    monkeypatch.setattr(websearch, "harvest", blocked)
+    message, _ = list(ui.do_web("lighthouses", 3, ""))[-1]
+    assert "Stopped" in message and "found nothing" in message

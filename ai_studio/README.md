@@ -362,11 +362,45 @@ The debug panel shows the exact prompt sent to the model, token counts,
 tokens/second, time to first token, the sampling parameters used and any
 retrieved context.
 
-Tools are available and strictly bounded: a calculator (arithmetic AST only), a
-document search over your library, and a Python sandbox that blocks imports,
-attribute access, dunder names and every call outside a small allow-list, and
-stops a snippet that exceeds its time limit. **Model-generated code never
-reaches the operating system.**
+### Tools
+
+Tools are explicit, allow-listed Python callables. Each validates its own input,
+and a tool that fails returns an error rather than taking the application down.
+
+| Tool | What it does | Confirmation |
+|---|---|---|
+| `calculator` | Arithmetic, evaluated over an AST — never `eval` | — |
+| `document_search` | Keyword search over your Data Library | — |
+| `python_sandbox` | A restricted snippet, stdout only | required |
+| `web_search` | Searches the web, returns titles, addresses and snippets | required |
+| `read_web_page` | Fetches one page and returns its readable text | required |
+
+The sandbox blocks imports, attribute access, dunder names and every call
+outside a small allow-list, and stops a snippet that exceeds its time limit.
+**Model-generated code never reaches the operating system.**
+
+The two web tools are the only ones that leave this machine, which is why both
+are marked as needing confirmation — `registry.call()` refuses them until the
+caller passes `confirmed=True`, so the flag is a gate rather than a label. They
+speak http and https only, refuse any address on this machine or its local
+network (checked again after every redirect, so a public URL cannot bounce into
+`localhost`), cap each page at 3 MB and 20 seconds, and follow only the address
+they were given — never a link found inside a page.
+
+Search goes through DuckDuckGo's HTML endpoint, with Wikipedia's own search as a
+fallback when DuckDuckGo blocks or rate-limits the machine. Neither needs an API
+key. If no engine answers, that is reported — no result is ever invented.
+
+**Which models can use these.** Deciding to call a tool — noticing a question
+needs a fact it does not have, choosing a query, reading the answer back — is an
+ability that appears in large instruction-tuned models. A model trained here, at
+1M to a few hundred million parameters, will not do it. These tools are useful
+with a capable model you have imported, and to you. Teacher uses the same code
+to gather *training material* from the web (`teacher web`), which is a different
+job and works with any model.
+
+Pages you fetch are someone else's writing under someone else's terms. A licence
+on this software is not permission to train on or redistribute them.
 
 ---
 
@@ -485,7 +519,7 @@ ai_studio/
 ├── rag/                   embeddings, vector store, retrieval
 ├── evaluation/            evaluators, suites, benchmark runner
 ├── hardware/              CPU/RAM/GPU telemetry
-├── tools/                 calculator, document search, Python sandbox
+├── tools/                 calculator, document search, Python sandbox, web search
 └── tests/
 ```
 

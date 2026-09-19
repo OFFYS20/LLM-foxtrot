@@ -222,6 +222,71 @@ def do_teach(name, files, pasted, folder, epochs, batch, rate, auto, target,
     return body, describe(name)
 
 
+# ----------------------------------------------------------------- the web
+def do_web(query, count, addresses):
+    """Search the web, keep the pages as text, and point Make/Teach at them.
+
+    A generator, so the window shows each address as it is read rather than
+    sitting blank for a minute.
+    """
+    from teacher import websearch
+
+    query = (query or "").strip()
+    urls = [line.strip() for line in (addresses or "").splitlines() if line.strip()]
+    if not query and not urls:
+        yield "Type something to search for, or paste an address.", gr.update()
+        return
+
+    progress: list[str] = []
+    done: dict = {}
+
+    def run():
+        try:
+            done["harvest"] = websearch.harvest(
+                query, urls=urls, limit=int(count),
+                on_step=lambda i, total, url: progress.append(f"{i}/{total} — {url}"),
+            )
+        except Exception as exc:  # noqa: BLE001 - a failed search must not kill the window
+            done["error"] = exc
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    shown = 0
+    while worker.is_alive():
+        if len(progress) > shown:
+            shown = len(progress)
+            yield "Reading:\n\n" + "\n".join(f"- `{line}`" for line in progress), gr.update()
+        time.sleep(0.3)
+    worker.join()
+
+    if "error" in done:
+        yield friendly(done["error"]), gr.update()
+        return
+
+    collected = done["harvest"]
+    try:
+        folder = websearch.folder_for(query or urls[0], workspace.root())
+        websearch.save(collected, folder)
+    except Exception as exc:  # noqa: BLE001
+        yield friendly(exc), gr.update()
+        return
+
+    lines = [f"**Kept {collected.summary()}** in `{folder}`", ""]
+    lines += [f"- [{page.title or page.url}]({page.url}) — {page.characters:,} characters"
+              for page in collected.pages]
+    if collected.skipped:
+        lines += ["", "Could not read:"]
+        lines += [f"- `{url}` — {why}" for url, why in collected.skipped[:5]]
+    lines += [
+        "",
+        "_Every file records the address it came from and the date. A page you "
+        "found is someone else's writing, under someone else's terms._",
+        "",
+        "The **folder** box above now points at it — press *Teach*.",
+    ]
+    yield "\n".join(lines), str(folder)
+
+
 # --------------------------------------------------------------------- chat
 def do_chat(message, chat_history, name, tokens, temperature, top_p, top_k):
     chat_history = chat_history or []
@@ -406,6 +471,26 @@ def build() -> gr.Blocks:
             check = gr.Button("Check what this adds up to", size="sm")
             material_out = gr.Markdown()
 
+            with gr.Accordion("…or fetch it from the web", open=False):
+                gr.Markdown(
+                    "Searches the web, reads what it finds and saves each page as a text "
+                    "file with the address it came from. Nothing is overwritten and "
+                    "nothing is thrown away — the folder box above is pointed at the "
+                    "result so *Make* and *Teach* can use it."
+                )
+                with gr.Row():
+                    web_query = gr.Textbox(
+                        label="Search for", scale=3,
+                        placeholder="victorian lighthouse keepers",
+                    )
+                    web_count = gr.Slider(1, 15, value=5, step=1, label="Pages to read")
+                web_urls = gr.Textbox(
+                    label="…or paste addresses, one per line", lines=2,
+                    placeholder="https://en.wikipedia.org/wiki/Lighthouse_keeper",
+                )
+                web_button = gr.Button("Search and keep", size="sm")
+                web_out = gr.Markdown()
+
         # ------------------------------------------------------- wiring
         def toggle(chosen):
             pretrained = chosen == "Start from a pretrained model"
@@ -434,6 +519,7 @@ def build() -> gr.Blocks:
         app.load(refresh_everything, picker, [picker, picker, picker, card])
 
         check.click(do_check, [files, pasted, folder], material_out)
+        web_button.click(do_web, [web_query, web_count, web_urls], [web_out, folder])
         picker.change(describe, picker, card)
         refresh.click(refresh_everything, picker, [picker, picker, picker, card])
 

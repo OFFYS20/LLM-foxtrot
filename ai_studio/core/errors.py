@@ -77,3 +77,11 @@ class InferenceError(StudioError):
 
 class UnsupportedError(StudioError):
     """The requested combination is not supported by this model/architecture."""
+
+
+class WebError(StudioError):
+    """A page or search could not be fetched from the web.
+
+    Separate from IngestionError because the cause is outside this machine —
+    no network, a refusing site, a rate limit — and the advice differs.
+    """

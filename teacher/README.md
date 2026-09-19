@@ -42,7 +42,9 @@ installs anything missing on the first run and opens it. Nothing has to be typed
 
 Below those sits **Text**, shared by Make and Teach: drop files, name a folder on
 this machine, or paste. *Check what this adds up to* reports what it found and
-what it skipped, before you commit to anything.
+what it skipped, before you commit to anything. Inside it, *…or fetch it from
+the web* searches, reads the pages and points the folder box at the result, so
+material you do not have can be gathered without leaving the window.
 
 The left-hand card shows the selected model's size, what it was built on, how far
 along it is, and the loss of each of its last eight lessons.
@@ -96,6 +98,7 @@ more than once to combine sources, or use `--text "..."` for something short.
 | `rollback NAME` | Undoes the last lesson, restoring the weights saved before it |
 | `forget NAME --yes` | Deletes a model and everything it learned |
 | `ui` | Opens the window — everything above, without the terminal |
+| `web [QUERY]` | Searches the web, reads what it finds, and saves it as material |
 | `bases` | Pretrained models worth starting from |
 | `guide` | Prints instructions to paste into ChatGPT or Claude so it drives Teacher |
 
@@ -107,17 +110,19 @@ Add `--json` to any command for one machine-readable object instead of prose.
 |---|---|---|
 | any | `--json` | One JSON object instead of prose |
 | any | `--version` | Print the version |
-| `new` | `--size` | `tiny`, `small`, `medium`, `large` — from scratch only |
+| `new` | `--size` | `tiny`, `small`, `medium`, `large`, `huge` — from scratch only |
 | `new` | `--base` | Start from a pretrained model instead |
 | `new` | `--context` | Context length in tokens, from scratch |
 | `new` | `--replace` | Overwrite a model of the same name |
 | `new` | `--no-teach` | Build it but do not train yet |
 | `new` | `--trust-remote-code` | Let a base model run its own code — only for repos you trust |
 | `new`, `teach` | `--from`, `--text`, `--raw` | Where the material comes from; `--raw` skips cleaning |
+| `new`, `teach` | `--web`, `--web-results` | Gather material from the web first, and how many pages to read |
 | `new`, `teach` | `--epochs`, `--batch`, `--rate` | Passes, sequences per step, learning rate |
 | `new`, `teach` | `--until`, `--max-rounds`, `--max-minutes` | Teach in rounds until done, and the limits on that |
 | `ask` | `--tokens`, `--temperature`, `--top-p`, `--top-k` | How much to generate and how adventurously |
 | `ask` | `--seed` | Repeat an exact answer |
+| `web` | `--results`, `--url`, `--list`, `-o` | How many pages, extra addresses, look without downloading, where to keep them |
 | `pack` | `-o`, `--out` | Where to copy the files |
 | `forget` | `--yes` | Confirm the deletion |
 | `ui` | `--port`, `--host`, `--share`, `--no-browser` | Where the window listens and whether it opens itself |
@@ -146,21 +151,20 @@ One limit: the Bench web page only runs models built from scratch here, so
 
 ### Sizes (from scratch)
 
-Each tier is ten times the one below it:
-
 | Size | Parameters | What it needs |
 |---|---|---|
 | `tiny` | 1M | learns grammar in minutes on a laptop CPU |
 | `small` | 10M | a few MB of text and some patience; still fine on a CPU |
 | `medium` | 100M | a GPU and a library's worth of text |
-| `large` | 1B | a serious GPU (24GB+) and gigabytes of text |
+| `large` | 500M | a GPU with room to spare and a lot of text |
+| `huge` | 1B | a serious GPU (24GB+) and gigabytes of text |
 
 Start with `tiny`. It will learn the shape of your text — sentence structure,
 punctuation, the rhythm of the source — within minutes on a CPU. Each step up
 needs roughly ten times the text and far more compute to be worth the wait; a
 tier too large for your material just memorises it.
 
-Teacher will not start a run that cannot fit. Asking for `large` on a laptop is
+Teacher will not start a run that cannot fit. Asking for `huge` on a laptop is
 refused before anything happens:
 
 ```
@@ -220,6 +224,85 @@ past the target is left alone rather than trained pointlessly.
 Every round saves the model, so Ctrl-C at any point leaves the last completed
 round on disk. The whole run is written to the history as one entry, keeping each
 round's loss inside it.
+
+---
+
+## Material from the web
+
+If you have nothing to hand, Teacher can go and find some.
+
+```bash
+python -m teacher web "grace darling rescue 1838" --results 3
+```
+
+It searches, reads each page, strips it down to the text a person would read,
+and writes every page to its own file:
+
+```
+Gathering from the web
+  searching the web for 'grace darling rescue 1838'
+    1/3  https://en.wikipedia.org/wiki/Grace_Darling
+    2/3  https://www.missedhistory.com/article/grace-darling-lighthouse-rescue-1838
+    3/3  https://rnli.org/about-us/our-history/timeline/1838-grace-darling
+  kept 2 page(s), 25,091 characters, 1 skipped in ~/teacher-models/web-material/grace-darling-rescue-1838-20260919-134056
+    skipped https://rnli.org/about-us/our-history/timeline/1838-grace-darling — the site answered 403
+  each file records the address it came from — web pages carry their own terms
+
+  2 page(s), 25,091 characters
+
+  Teach from it:  python -m teacher teach NAME --from "~/teacher-models/web-material/grace-darling-..."
+```
+
+A page that refuses is named and skipped; the rest of the run carries on.
+
+Every file starts with its title, its address and the date it was read:
+
+```
+The Lighthouse Keeper's Daughter Who Rowed Into a Storm | Missed History
+Source: https://www.missedhistory.com/article/grace-darling-lighthouse-rescue-1838
+Retrieved: 2026-09-19
+
+At 4:45 in the morning on September 7, 1838, Grace Darling looked out from the
+upper window of Longstone Lighthouse and saw a paddle steamer broken in half on
+the rocks...
+```
+
+That header is not decoration. A page you found is someone else's writing under
+someone else's terms, and a corpus with no record of where it came from cannot
+be checked later. **A licence on this software is not permission to train on, or
+redistribute, what you download with it** — that is yours to judge, per source.
+
+| Flag | What it does |
+|---|---|
+| `--results N` | How many pages to read (default 5) |
+| `--url ADDRESS` | Read this page too, or instead of searching. Repeatable |
+| `--list` | Show what the search found and download nothing |
+| `-o DIR` | Where to keep the files. The default is a dated folder under your models directory |
+
+`new` and `teach` take `--web "SOMETHING"` to do both steps at once:
+
+```bash
+python -m teacher new seabot --base small --web "history of lighthouses" --until best
+```
+
+The pages are still saved to a folder and the path is printed — nothing is
+fetched into memory and thrown away.
+
+**What it will and will not do.** It searches DuckDuckGo, and falls back to
+Wikipedia's own search when DuckDuckGo blocks or rate-limits the machine; if
+neither answers it says so rather than returning nothing quietly. It reads only
+the addresses a search returned or you named — it never follows links found
+inside a page, so it cannot wander. Addresses on this machine or its local
+network are refused, before and after redirects, so a page cannot redirect it
+into `localhost`. Pages are read one at a time with a second between them, a
+20-second timeout and a 3 MB cap.
+
+**It does not make your model able to browse.** Deciding to search, choosing a
+query and reading the answer back is something large instruction-tuned models
+do; a model of 1M to 360M parameters will not. This gathers *material for
+training*. AI Studio separately registers `web_search` and `read_web_page` as
+tools, which are useful to a capable model you have imported — see
+[ai_studio/README.md](../ai_studio/README.md).
 
 ---
 

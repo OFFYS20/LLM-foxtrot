@@ -25,12 +25,12 @@ from ai_studio.training.trainer import Trainer, perplexity
 from teacher.material import Material
 from teacher.workspace import Model, TeacherError
 
-# Each tier is ten times the one below it.
 SIZES = {
     "tiny": ("nano-1m", "learns grammar in minutes on a laptop CPU"),
     "small": ("tiny-10m", "a few MB of text and some patience; still fine on a CPU"),
     "medium": ("base-100m", "wants a GPU and a library's worth of text"),
-    "large": ("huge-1b", "a serious GPU (24GB+) and gigabytes of text"),
+    "large": ("large-500m", "a GPU with room to spare and a lot of text"),
+    "huge": ("huge-1b", "a serious GPU (24GB+) and gigabytes of text"),
 }
 
 #: Pretrained starting points that are realistic to fine-tune at home. Anything

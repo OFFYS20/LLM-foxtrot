@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from ai_studio.core.errors import ValidationError
+from ai_studio.core.errors import ValidationError, WebError
 from ai_studio.tools.calculator import calculate
 from ai_studio.tools.python_sandbox import run_python
 
@@ -122,3 +122,93 @@ def test_a_timed_out_snippet_does_not_leave_a_thread_running():
     while threading.active_count() > before and __import__("time").monotonic() < deadline:
         pass
     assert threading.active_count() == before, "a runaway snippet must be stopped, not abandoned"
+
+
+# ------------------------------------------------------------- the registry
+def test_every_built_in_tool_is_registered():
+    from ai_studio.tools.registry import install_default_tools
+
+    names = {tool.name for tool in install_default_tools().list()}
+    assert {"calculator", "document_search", "python_sandbox",
+            "web_search", "read_web_page"} <= names
+
+
+def test_a_tool_that_needs_confirmation_does_not_run_without_it():
+    """Declaring a tool dangerous and running it anyway would make the flag decoration."""
+    from ai_studio.tools.registry import install_default_tools
+
+    registry = install_default_tools()
+    answer = registry.call("python_sandbox", {"code": "print(1)"})
+    assert answer["ok"] is False
+    assert answer["needs_confirmation"] is True
+
+
+def test_a_confirmed_tool_runs():
+    from ai_studio.tools.registry import install_default_tools
+
+    registry = install_default_tools()
+    answer = registry.call("python_sandbox", {"code": "print(6 * 7)"}, confirmed=True)
+    assert answer["ok"] is True
+    assert "42" in answer["result"]["stdout"]
+
+
+def test_reaching_the_web_needs_confirmation():
+    from ai_studio.tools.registry import install_default_tools
+
+    registry = install_default_tools()
+    for name in ("web_search", "read_web_page"):
+        assert registry.get(name).requires_confirmation, f"{name} leaves this machine"
+
+
+def test_a_failing_tool_is_data_not_a_crash(monkeypatch):
+    from ai_studio.tools import web_search as module
+    from ai_studio.tools.registry import install_default_tools
+
+    def blocked(query, *, limit=5, engine="auto"):
+        raise WebError("the site answered 429")
+
+    monkeypatch.setattr(module.web, "search", blocked)
+    answer = install_default_tools().call("web_search", {"query": "x"}, confirmed=True)
+    assert answer["ok"] is False
+    assert "429" in answer["error"]
+
+
+# -------------------------------------------------------------- web_search
+def test_web_search_hands_back_what_it_found(monkeypatch):
+    from ai_studio.data.web import Result
+    from ai_studio.tools import web_search as module
+
+    monkeypatch.setattr(module.web, "search", lambda query, *, limit=5: [
+        Result(title="One", url="https://a.test/1", snippet="first", engine="web"),
+    ])
+    answer = module.web_search("lighthouses", top_k=3)
+    assert answer["count"] == 1
+    assert answer["results"][0] == {"title": "One", "url": "https://a.test/1",
+                                    "snippet": "first", "engine": "web"}
+
+
+@pytest.mark.parametrize("query", ["", "   ", None])
+def test_web_search_needs_something_to_search_for(query):
+    from ai_studio.tools.web_search import web_search
+
+    with pytest.raises(ValidationError):
+        web_search(query)
+
+
+def test_reading_a_page_says_when_it_was_cut_short(monkeypatch):
+    from ai_studio.data.web import Page
+    from ai_studio.tools import web_search as module
+
+    monkeypatch.setattr(module.web, "fetch_page",
+                        lambda url: Page(url=url, title="T", text="x" * 9_000))
+    answer = module.read_web_page("https://a.test/", max_chars=1_000)
+    assert answer["truncated"] is True
+    assert len(answer["text"]) == 1_000
+    assert answer["characters"] == 9_000, "the real length is reported, not the truncated one"
+
+
+def test_reading_a_page_refuses_an_address_on_this_machine():
+    from ai_studio.tools.web_search import read_web_page
+
+    with pytest.raises(ValidationError):
+        read_web_page("http://127.0.0.1:8000/secrets")

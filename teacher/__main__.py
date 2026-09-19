@@ -69,7 +69,13 @@ def fmt_bytes(size: int) -> str:
 
 
 def collect(args) -> "gather":
-    material = gather(list(args.source or []), raw_text=args.text or "", clean=not args.raw)
+    sources = list(args.source or [])
+    if getattr(args, "web", "") and args.web.strip():
+        sources.append(str(fetch_material(args.web, getattr(args, "web_results", 5))[0]))
+        # So the "teach it again" advice below names the folder that was gathered
+        # rather than "<your text>".
+        args.source = sources
+    material = gather(sources, raw_text=args.text or "", clean=not args.raw)
     if material.skipped:
         say(style(f"  skipped {len(material.skipped)} item(s):", DIM))
         for path, why in material.skipped[:5]:
@@ -80,6 +86,34 @@ def collect(args) -> "gather":
         raise TeacherError("Nothing readable was found. Point --from at a file or folder of text.")
     say(f"  material: {material.summary()}")
     return material
+
+
+def fetch_material(query: str, results: int, urls: list[str] | None = None,
+                   destination: Path | None = None) -> tuple[Path, "object"]:
+    """Search the web, read what it finds, and keep it as text files.
+
+    Returns the folder it was written to and the harvest itself.
+    """
+    from teacher import websearch
+
+    if query and query.strip():
+        say(style(f"  searching the web for {query!r}", DIM))
+    else:
+        say(style(f"  reading {len(urls or [])} address(es)", DIM))
+
+    def on_step(index, total, url):
+        say(style(f"    {index}/{total}  {url[:88]}", DIM))
+
+    collected = websearch.harvest(query, urls=urls, limit=results, on_step=on_step)
+    folder = Path(destination) if destination else websearch.folder_for(
+        query or (urls or [""])[0], workspace.root())
+    websearch.save(collected, folder)
+    say(style(f"  kept {collected.summary()} in {folder}", DIM))
+    for url, why in collected.skipped[:5]:
+        say(style(f"    skipped {url} — {why}", DIM))
+    say(style("  each file records the address it came from — web pages carry "
+              "their own terms", DIM))
+    return folder, collected
 
 
 # ------------------------------------------------------------------ commands
@@ -278,6 +312,40 @@ def respond(model, prompt: str, args) -> None:
     return emit(command="ask", model=model.name, prompt=prompt, reply=text, **stats)
 
 
+def cmd_web(args) -> int:
+    """Look something up on the web and keep the pages as material."""
+    from teacher import websearch
+
+    query = " ".join(args.query or []).strip()
+    if not query and not args.url:
+        raise TeacherError("Give something to search for, or --url ADDRESS.")
+
+    if args.list:
+        if not query:
+            raise TeacherError("--list shows what a search found; give it something to search for.")
+        found = websearch.search(query, limit=args.results)
+        say(f"{style(str(len(found)) + ' result(s) for ' + repr(query), BOLD)}\n")
+        for index, result in enumerate(found, start=1):
+            say(f"  {index}. {result.title}")
+            say(style(f"     {result.url}", DIM))
+            if result.snippet:
+                say(style(f"     {result.snippet[:160]}", DIM))
+        say(style("\n  Nothing was downloaded. Drop --list to read and keep them.", DIM))
+        return emit(command="web", query=query, fetched=False,
+                    results=[r.to_dict() for r in found])
+
+    say(f"{style('Gathering from the web', BOLD)}")
+    destination = Path(args.out).expanduser() if args.out else None
+    folder, collected = fetch_material(query, args.results, urls=list(args.url or []),
+                                       destination=destination)
+    say(f"\n  {len(collected.pages)} page(s), {collected.characters:,} characters")
+    say(style(f"\n  Teach from it:  python -m teacher teach NAME --from \"{folder}\"", DIM))
+    return emit(command="web", query=query, fetched=True, folder=str(folder),
+                characters=collected.characters,
+                pages=[page.to_dict() for page in collected.pages],
+                skipped=[{"url": url, "why": why} for url, why in collected.skipped])
+
+
 def cmd_list(args) -> int:
     models = workspace.every()
     if not models:
@@ -336,7 +404,8 @@ THE COMMANDS
   {python} -m teacher --json new NAME --base small --from PATH
       Make a model starting from a pretrained one (best output, needs a
       download). Drop --base to build from scratch instead, which also takes
-      --size tiny|small|medium|large.
+      --size tiny|small|medium|large|huge (1M, 10M, 100M, 500M, 1B parameters).
+      Anything past 10M wants a GPU; do not choose one on a laptop.
 
   {python} -m teacher --json teach NAME --from PATH --until best
       Teach it until it stops improving. Add --epochs N to set the size of one
@@ -353,6 +422,16 @@ THE COMMANDS
       Undo the last lesson if it made the model worse. Two earlier states are
       kept, so this works at most twice in a row.
 
+  {python} -m teacher --json web "SOMETHING" --results 5
+      Search the web, read what it finds, and save each page as a text file in
+      a new folder. Returns that folder, and a list of the pages with their
+      addresses. Add --url ADDRESS to read a page you already know, with or
+      without a search; add --list to see what a search found without
+      downloading anything; add -o DIR to choose where it goes.
+      Then teach from it with --from FOLDER.
+
+      new and teach also take --web "SOMETHING" to do both in one step.
+
   PATH is a file or a folder. It reads .txt .md .pdf .docx .epub .html .csv
   .json and walks folders. --text "..." works instead of --from for short text.
 
@@ -368,6 +447,10 @@ WHAT THE RESULTS MEAN
 
 RULES
   - Ask me where my text is before you start. Do not guess a path.
+  - Only go to the web if I asked for it or agreed to it, and tell me which
+    pages you took. Those pages are someone else's writing under someone
+    else's terms; every saved file keeps its address for that reason. Five to
+    ten pages is a normal run — do not pull hundreds.
   - Start from a pretrained model unless I say I want to watch one learn from
     nothing; the output is far better.
   - Use --until best rather than picking an epoch count.
@@ -520,6 +603,11 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("--text", help="text to learn from, given directly")
         sub.add_argument("--raw", action="store_true",
                          help="skip cleaning and use the text exactly as found")
+        sub.add_argument("--web", metavar="QUERY", default="",
+                         help="also search the web for this and learn from what it finds; "
+                              "the pages are kept as text files, not thrown away")
+        sub.add_argument("--web-results", dest="web_results", type=int, default=5,
+                         help="how many pages --web reads (default 5)")
 
     def add_training(sub):
         sub.add_argument("--epochs", type=float, default=3.0,
@@ -568,6 +656,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     listing = subs.add_parser("list", help="show every model you have")
     listing.set_defaults(func=cmd_list)
+
+    web = subs.add_parser(
+        "web", help="search the web and keep what it finds as material")
+    web.add_argument("query", nargs="*", help="what to search for")
+    web.add_argument("--results", type=int, default=5,
+                     help="how many pages to read (default 5)")
+    web.add_argument("--url", action="append", metavar="ADDRESS",
+                     help="read this page too, or instead of searching (repeatable)")
+    web.add_argument("-o", "--out", metavar="DIR",
+                     help="where to keep the text files (default: a dated folder "
+                          "under your models directory)")
+    web.add_argument("--list", action="store_true",
+                     help="only show what the search found; download nothing")
+    web.set_defaults(func=cmd_web)
 
     bases = subs.add_parser("bases", help="pretrained models worth starting from")
     bases.set_defaults(func=cmd_bases)

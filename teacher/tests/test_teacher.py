@@ -189,22 +189,19 @@ def test_a_seed_repeats_the_same_answer(taught):
 
 
 # -------------------------------------------------------------------- sizes
-def test_the_sizes_climb_by_ten():
-    """tiny -> small -> medium -> large is 1M -> 10M -> 100M -> 1B."""
+def test_the_sizes_climb_and_match_their_advertised_scale():
+    """tiny -> small -> medium -> large -> huge is 1M, 10M, 100M, 500M, 1B."""
     from ai_studio.models.transformer import preset_config
 
-    counts = [
-        preset_config(lessons.SIZES[key][0]).parameter_count()["total"]
-        for key in ("tiny", "small", "medium", "large")
-    ]
+    order = ("tiny", "small", "medium", "large", "huge")
+    counts = [preset_config(lessons.SIZES[key][0]).parameter_count()["total"] for key in order]
     assert counts == sorted(counts), "each tier must be bigger than the last"
-    for smaller, bigger in zip(counts, counts[1:]):
-        ratio = bigger / smaller
-        assert 5 <= ratio <= 20, f"tiers should be about 10x apart, got {ratio:.1f}x"
 
-    expected = [1e6, 1e7, 1e8, 1e9]
-    for actual, target in zip(counts, expected):
-        assert 0.5 * target <= actual <= 2.0 * target, f"{actual:,} is not near {target:,.0f}"
+    expected = [1e6, 1e7, 1e8, 5e8, 1e9]
+    for key, actual, target in zip(order, counts, expected):
+        assert 0.5 * target <= actual <= 2.0 * target, (
+            f"{key} is {actual:,} parameters, not near {target:,.0f}"
+        )
 
 
 def test_every_size_names_a_real_preset():
