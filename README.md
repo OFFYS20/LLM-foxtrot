@@ -61,7 +61,7 @@ whole thing happen — and only these models run in Bench.
 | Needs | a few hundred KB of text | a few KB is enough |
 | Learns | the language *and* your material | your material |
 | Runs in Bench | yes | no — chat in Teacher |
-| Sizes | 1M / 10M / 100M / 500M / 1B | whatever you adopt |
+| Sizes | `tiny` 1M, `small` 10M, `medium` 100M, `large` 500M, `huge` 1B | whatever you adopt |
 
 ---
 
@@ -140,7 +140,7 @@ assistant can tell you what went wrong instead of guessing.
 **Every command, on every path, prints exactly one object** — an empty workspace,
 a model that was built but not taught, a failure. Nothing else reaches stdout,
 not even during a live training run, so there is nothing for an assistant to
-misread. Ten tests hold that contract in place.
+misread. Fourteen tests hold that contract in place.
 
 ---
 

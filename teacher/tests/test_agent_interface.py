@@ -152,3 +152,25 @@ def test_the_guide_tells_an_assistant_the_web_is_there():
     guide = teacher("guide")["guide"]
     assert "web" in guide
     assert "--web" in guide or "--json web" in guide
+
+
+def test_the_readme_does_not_overstate_how_much_holds_this_contract():
+    """A count in prose goes stale the moment a test is added or removed."""
+    import re
+
+    words = {"Ten": 10, "Eleven": 11, "Twelve": 12, "Thirteen": 13, "Fourteen": 14,
+             "Fifteen": 15, "Sixteen": 16, "Seventeen": 17, "Eighteen": 18,
+             "Nineteen": 19, "Twenty": 20}
+    readme = (REPO / "README.md").read_text()
+    claimed = re.search(r"(\w+) tests hold that contract in place", readme)
+    assert claimed, "the README no longer makes the claim this test checks"
+
+    written = claimed.group(1)
+    count = words.get(written) or int(written)
+    # This test checks the README, not the contract, so it does not count itself.
+    here = re.findall(r"^def (test_\w+)", Path(__file__).read_text(), re.M)
+    real = len([name for name in here if "readme" not in name])
+    assert count == real, (
+        f"README.md says {written.lower()} tests hold the JSON contract; "
+        f"this file has {real}"
+    )
