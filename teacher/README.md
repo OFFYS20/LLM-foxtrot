@@ -30,9 +30,25 @@ cd ..
 python -m teacher ui
 ```
 
-Or double-click `Start-Teacher.bat` (Windows) / run `./start-teacher.sh`. Every
-command below has a button in that window, and both share one store — make a
-model in the window, teach it from a script.
+Or double-click `Start-Teacher.bat` (Windows) / run `./start-teacher.sh`, which
+installs anything missing on the first run and opens it. Nothing has to be typed.
+
+| Tab | What is there |
+|---|---|
+| **Make** | Name it, then either adopt a pretrained model or build one from scratch at a chosen size |
+| **Teach** | Give it material and press Teach. *Keep going until it is done* is on by default, and each round's loss and stage appear as they happen |
+| **Chat** | Talk to it, with temperature, top-p, top-k and length behind a *Sampling* panel |
+| **Keep** | Copy the files for Bench, roll back the last lesson, or delete the model |
+
+Below those sits **Text**, shared by Make and Teach: drop files, name a folder on
+this machine, or paste. *Check what this adds up to* reports what it found and
+what it skipped, before you commit to anything.
+
+The left-hand card shows the selected model's size, what it was built on, how far
+along it is, and the loss of each of its last eight lessons.
+
+Everything there is also a command, and the two share one store — make a model in
+the window, teach it from a script, chat with it back in the window.
 
 ### The commands
 
@@ -77,12 +93,34 @@ more than once to combine sources, or use `--text "..."` for something short.
 | `list` | Every model you have, with size and how much it has been taught |
 | `show NAME` | One model's architecture and its full lesson history |
 | `pack NAME -o DIR` | Copies `model.safetensors`, `config.json` and `tokenizer.json` |
+| `rollback NAME` | Undoes the last lesson, restoring the weights saved before it |
 | `forget NAME --yes` | Deletes a model and everything it learned |
 | `ui` | Opens the window — everything above, without the terminal |
 | `bases` | Pretrained models worth starting from |
 | `guide` | Prints instructions to paste into ChatGPT or Claude so it drives Teacher |
 
 Add `--json` to any command for one machine-readable object instead of prose.
+
+### Every option
+
+| On | Flag | What it does |
+|---|---|---|
+| any | `--json` | One JSON object instead of prose |
+| any | `--version` | Print the version |
+| `new` | `--size` | `tiny`, `small`, `medium`, `large` — from scratch only |
+| `new` | `--base` | Start from a pretrained model instead |
+| `new` | `--context` | Context length in tokens, from scratch |
+| `new` | `--replace` | Overwrite a model of the same name |
+| `new` | `--no-teach` | Build it but do not train yet |
+| `new` | `--trust-remote-code` | Let a base model run its own code — only for repos you trust |
+| `new`, `teach` | `--from`, `--text`, `--raw` | Where the material comes from; `--raw` skips cleaning |
+| `new`, `teach` | `--epochs`, `--batch`, `--rate` | Passes, sequences per step, learning rate |
+| `new`, `teach` | `--until`, `--max-rounds`, `--max-minutes` | Teach in rounds until done, and the limits on that |
+| `ask` | `--tokens`, `--temperature`, `--top-p`, `--top-k` | How much to generate and how adventurously |
+| `ask` | `--seed` | Repeat an exact answer |
+| `pack` | `-o`, `--out` | Where to copy the files |
+| `forget` | `--yes` | Confirm the deletion |
+| `ui` | `--port`, `--host`, `--share`, `--no-browser` | Where the window listens and whether it opens itself |
 
 ### Starting from a pretrained model
 
@@ -194,7 +232,8 @@ round's loss inside it.
 3. Runs a real training loop — forward, backward, gradient clipping, a cosine
    schedule with warmup.
 4. Copies the previous weights into `checkpoints/` **before** overwriting them,
-   so a disappointing lesson can be rolled back by hand.
+   so a disappointing lesson can be undone with `teacher rollback` or the window's
+   *Roll back* button.
 5. Appends what happened to `history.json`. Nothing already recorded is rewritten.
 
 ```
@@ -208,6 +247,16 @@ round's loss inside it.
 
 The first three files are all Bench needs, which is why `pack` is a copy rather
 than a conversion.
+
+### Undoing a lesson
+
+```bash
+python -m teacher rollback bookbot
+```
+
+Restores the weights saved before the most recent lesson. The history is left
+alone: it records what happened, and the lesson did happen. Two earlier states
+are kept, so this can be done twice before the older one is gone.
 
 ---
 

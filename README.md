@@ -46,6 +46,9 @@ python -m teacher ui
 That is the whole loop. **Keep** holds the rest: copy the files for Bench, roll
 back a lesson you regret, or delete a model.
 
+Teacher saves the weights before every lesson, so one that made things worse is a
+button — or `teacher rollback NAME` — away from being undone.
+
 ### From scratch instead
 
 Choose **Build from scratch** to watch a model learn a language from nothing.
@@ -76,6 +79,7 @@ python -m teacher ask bookbot "once upon a"
 python -m teacher list
 python -m teacher show bookbot
 python -m teacher pack bookbot -o ./for-bench
+python -m teacher rollback bookbot                     # undo the last lesson
 ```
 
 `--from` takes a file or a folder and reads `.txt`, `.md`, `.pdf`, `.docx`,

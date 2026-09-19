@@ -100,6 +100,33 @@ class Model:
         except json.JSONDecodeError:
             return {}
 
+    # ---------------------------------------------------------- rollback
+    def earlier_states(self) -> list[Path]:
+        """Every saved state from before a lesson, oldest first."""
+        if not self.checkpoints.exists():
+            return []
+        return sorted(p for p in self.checkpoints.glob("before-*") if p.is_dir())
+
+    def rollback(self) -> str:
+        """Restore the weights saved before the most recent lesson.
+
+        The lesson history is left alone: it is a record of what happened, and
+        the rollback happened too.
+        """
+        saved = self.earlier_states()
+        if not saved:
+            raise TeacherError(
+                f"{self.name} has no earlier state saved — it has not been taught yet, "
+                f"or the saved states were removed."
+            )
+        newest = saved[-1]
+        restored = [item for item in newest.iterdir() if item.is_file()]
+        if not restored:
+            raise TeacherError(f"The saved state {newest.name} is empty.")
+        for item in restored:
+            shutil.copy2(item, self.path / item.name)
+        return newest.name
+
     # -------------------------------------------------------------- copy
     def pack(self, destination: Path) -> list[str]:
         """Copy just the three files Bench needs into ``destination``."""

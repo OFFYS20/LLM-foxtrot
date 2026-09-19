@@ -349,6 +349,10 @@ THE COMMANDS
   {python} -m teacher --json show NAME
       Architecture, every lesson, and how far along it is.
 
+  {python} -m teacher --json rollback NAME
+      Undo the last lesson if it made the model worse. Two earlier states are
+      kept, so this works at most twice in a row.
+
   PATH is a file or a folder. It reads .txt .md .pdf .docx .epub .html .csv
   .json and walks folders. --text "..." works instead of --from for short text.
 
@@ -370,6 +374,7 @@ RULES
   - If a command returns ok:false, tell me the error and what to do about it.
     Do not retry the same thing.
   - Training takes minutes to hours. Say so before starting a long one.
+  - If a lesson raises the held-out loss, say so and offer to roll it back.
   - Tell me the stage and whether it is still improving. Skip the numbers
     unless I ask.
 """
@@ -470,6 +475,16 @@ def cmd_pack(args) -> int:
         say(f"  {name}  {fmt_bytes((destination / name).stat().st_size)}")
     say(style("\nOpen web_chat/index.html and drop that folder in to talk to it.", DIM))
     return emit(command="pack", model=model.name, destination=str(destination), files=copied)
+
+
+def cmd_rollback(args) -> int:
+    model = workspace.get(args.name)
+    saved = model.earlier_states()
+    restored = model.rollback()
+    say(f"Rolled {model.name} back to the state saved before its last lesson ({restored}).")
+    say(style("  Its history still lists every lesson — that is a record of what happened.", DIM))
+    return emit(command="rollback", model=model.name, restored_from=restored,
+                states_left=len(saved) - 1)
 
 
 def cmd_forget(args) -> int:
@@ -576,6 +591,11 @@ def build_parser() -> argparse.ArgumentParser:
     pack.add_argument("name")
     pack.add_argument("-o", "--out", required=True, metavar="DIR")
     pack.set_defaults(func=cmd_pack)
+
+    rollback = subs.add_parser(
+        "rollback", help="undo the last lesson, restoring the weights saved before it")
+    rollback.add_argument("name")
+    rollback.set_defaults(func=cmd_rollback)
 
     forget = subs.add_parser("forget", help="delete a model and everything it learned")
     forget.add_argument("name")

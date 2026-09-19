@@ -265,16 +265,8 @@ def do_rollback(name):
         if not name:
             raise TeacherError("Choose a model first.")
         model = workspace.get(name)
-        saved = sorted(p for p in model.checkpoints.glob("before-*") if p.is_dir())
-        if not saved:
-            raise TeacherError(f"{model.name} has no earlier state saved yet.")
-
-        newest = saved[-1]
-        import shutil
-
-        for item in newest.iterdir():
-            shutil.copy2(item, model.path / item.name)
-        return (f"### Rolled back\n\n{model.name} restored from `{newest.name}`. "
+        restored = model.rollback()
+        return (f"### Rolled back\n\n{model.name} restored from `{restored}`. "
                 f"Its lesson history is unchanged — it still lists what was taught.")
     except Exception as exc:  # noqa: BLE001
         return friendly(exc)

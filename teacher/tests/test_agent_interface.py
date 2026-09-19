@@ -112,6 +112,19 @@ def test_a_model_that_was_built_but_not_taught_still_answers():
     assert payload["parameters"] > 0
 
 
+def test_the_guide_covers_every_command_it_tells_an_assistant_to_run():
+    """A command named in the guide must exist; one that exists should be known."""
+    import re
+
+    payload = teacher("guide")
+    named = set(re.findall(r"-m teacher --json (\w+)", payload["guide"]))
+    real = set(re.findall(r'add_parser\(\s*"(\w+)"',
+                          (REPO / "teacher" / "__main__.py").read_text()))
+    assert named <= real, f"the guide names commands that do not exist: {named - real}"
+    for essential in ("list", "new", "teach", "ask", "show", "rollback"):
+        assert essential in named, f"an assistant is never told about '{essential}'"
+
+
 def test_nothing_but_the_object_reaches_stdout():
     """Training logs and progress must not pollute what an assistant parses."""
     env = {**os.environ, "TEACHER_HOME": str(HOME / "models")}

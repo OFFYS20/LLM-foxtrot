@@ -378,6 +378,37 @@ def test_notes_are_kept_beside_the_lessons(taught):
     assert len(model.history()["lessons"]) == before, "a note must not disturb the lessons"
 
 
+# ----------------------------------------------------------------- rollback
+def test_rollback_restores_the_weights_from_before_the_last_lesson(material_dir):
+    model = workspace.get("undoer", must_exist=False)
+    lessons.create(model, gather([str(material_dir)]), "tiny", context=64)
+    lessons.teach(model, gather([str(material_dir)]), epochs=1.0, batch_size=8)
+
+    after_first = (model.path / "model.safetensors").read_bytes()
+    lessons.teach(model, gather([str(material_dir)]), epochs=1.0, batch_size=8)
+    after_second = (model.path / "model.safetensors").read_bytes()
+    assert after_first != after_second, "the second lesson should have changed the weights"
+
+    model.rollback()
+    assert (model.path / "model.safetensors").read_bytes() == after_first
+
+
+def test_rollback_leaves_the_history_alone(material_dir):
+    """The record says what happened, and the lesson did happen."""
+    model = workspace.get("undoer", must_exist=True)
+    before = len(model.history()["lessons"])
+    model.rollback()
+    assert len(model.history()["lessons"]) == before
+
+
+def test_rollback_without_a_saved_state_is_refused(tmp_path):
+    model = workspace.Model(name="fresh", path=tmp_path / "fresh")
+    model.path.mkdir()
+    with pytest.raises(TeacherError) as excinfo:
+        model.rollback()
+    assert "no earlier state" in str(excinfo.value)
+
+
 # --------------------------------------------------------------------- pack
 def test_pack_copies_exactly_what_the_web_page_needs(taught, tmp_path):
     model, _built, _lesson = taught
