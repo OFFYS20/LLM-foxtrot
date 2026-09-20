@@ -699,3 +699,58 @@ def test_lora_is_refused_on_a_model_built_from_noise(taught, material_dir):
         lessons.teach(model, gather([str(material_dir)]), epochs=0.1, lora=True)
     assert "built here" in str(excinfo.value)
     assert "--lora" in str(excinfo.value)
+
+
+# ------------------------------------------------- a size of your own choosing
+def test_a_named_rung_still_resolves_to_its_rung():
+    assert lessons.resolve_size("200m") == "200m"
+    assert lessons.resolve_size("tiny") == "1m"
+
+
+def test_a_number_resolves_to_that_many_parameters():
+    assert lessons.resolve_size("50M") == 50_000_000
+    assert lessons.resolve_size("70k") == 70_000
+    assert lessons.resolve_size("1.5B") == 1_500_000_000
+    assert lessons.resolve_size("250000") == 250_000
+
+
+def test_a_size_that_is_neither_lists_both_kinds():
+    with pytest.raises(TeacherError) as excinfo:
+        lessons.resolve_size("enormous")
+    message = str(excinfo.value)
+    assert "70K" in message, "it should show the shape of a number"
+    assert "200m" in message and "tiny" in message, "and the ready-made rungs"
+
+
+def test_building_an_asked_for_size_lands_near_it(material_dir):
+    model = workspace.get("five-hundred-k", must_exist=False)
+    built = lessons.create(model, gather([str(material_dir)]), "500K", context=128)
+
+    assert built["asked_for"] == 500_000
+    assert abs(built["parameters"] / 500_000 - 1) < 0.1, built
+    assert model.exists(), "it has to be a real model on disk, not a number"
+
+
+def test_what_was_built_is_reported_not_what_was_asked_for(material_dir):
+    """Reporting the number asked for would be a small lie that compounds."""
+    model = workspace.get("honest-count", must_exist=False)
+    built = lessons.create(model, gather([str(material_dir)]), "333K", context=128)
+
+    from ai_studio.models.transformer import TransformerConfig
+
+    arch = model.architecture()
+    known = {k: v for k, v in arch.items() if k in TransformerConfig.__dataclass_fields__}
+    real = TransformerConfig(**known).parameter_count()["total"]
+    assert built["parameters"] == real, "the reported count must be the built count"
+
+
+def test_a_size_this_machine_cannot_hold_is_refused_before_it_is_built(material_dir):
+    model = workspace.get("impossible", must_exist=False)
+    with pytest.raises(TeacherError) as excinfo:
+        lessons.create(model, gather([str(material_dir)]), "100T")
+
+    message = str(excinfo.value)
+    assert "cannot be built here" in message
+    assert "GB at four bytes each" in message, "say the arithmetic, not just no"
+    assert "largest that would fit" in message, "and say what would work"
+    assert not model.exists(), "nothing should have been written"

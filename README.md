@@ -279,7 +279,7 @@ model. If training were simulated, they would fail.
 
 ## Licence
 
-The software is MIT. **That covers this application only.** Model weights,
+The software is under the Apache License 2.0 — see [LICENSE](LICENSE). **That covers this application only.** Model weights,
 datasets, benchmark splits and web pages you download carry their own terms — a
 licence here is not permission to use or redistribute someone else's work.
 Teacher and AI Studio record what each model declares and show it, and every

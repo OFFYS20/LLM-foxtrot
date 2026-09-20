@@ -148,7 +148,8 @@ def refresh_everything(selected: str | None = None):
 
 
 # -------------------------------------------------------------------- build
-def do_create(name, mode, size, base, custom_base, files, pasted, folder, progress=gr.Progress()):
+def do_create(name, mode, size, custom_size, base, custom_base, files, pasted, folder,
+              progress=gr.Progress()):
     try:
         if not name or not name.strip():
             raise TeacherError("Give the model a name.")
@@ -170,10 +171,19 @@ def do_create(name, mode, size, base, custom_base, files, pasted, folder, progre
             if not material.characters:
                 raise TeacherError("Add some text first — the tokenizer is built from it.")
             progress(0.3, desc="Training a tokenizer and building the model")
-            built = lessons.create(model, material, size)
+            wanted = (custom_size or "").strip() or size
+            built = lessons.create(model, material, wanted)
+
+            count = f"**{fmt(built['parameters'])}** parameters"
+            if built.get("asked_for"):
+                drift = built["parameters"] / built["asked_for"] - 1
+                count += (f" — you asked for {fmt(built['asked_for'])}, "
+                          f"{drift * 100:+.1f}%")
             report = (f"### Built {model.name}\n\n"
-                      f"**{fmt(built['parameters'])}** parameters · vocabulary "
-                      f"{built['vocab_size']:,} · context {built['context']}\n\n"
+                      f"{count}\n\n"
+                      f"{built['hidden_size']} wide · {built['layers']} layers · "
+                      f"{built['heads']} heads · vocabulary {built['vocab_size']:,} · "
+                      f"context {built['context']}\n\n"
                       f"Built from {material.summary()}. It knows nothing yet — "
                       f"go to **Teach**.")
     except Exception as exc:  # noqa: BLE001 - one failure must not kill the window
@@ -448,9 +458,17 @@ def build() -> gr.Blocks:
                         with gr.Group(visible=False) as scratch_group:
                             size = gr.Radio(
                                 [(f"{key} — {note}", key) for key, (_p, note) in lessons.SIZES.items()],
-                                value="tiny", label="Size",
+                                value=next(iter(lessons.SIZES)), label="Size",
                             )
-                            gr.Markdown("_From scratch, the text below also builds the tokenizer._")
+                            custom_size = gr.Textbox(
+                                label="…or type how many parameters you want",
+                                placeholder="70K, 5M, 51M, 1.5B — anything you like",
+                            )
+                            gr.Markdown(
+                                "_Widths move in steps, so a number lands near rather than on "
+                                "it; you will be told what was actually built. The text below "
+                                "also builds the tokenizer._"
+                            )
                         make_button = gr.Button("Make it", variant="primary")
                         make_out = gr.Markdown()
 
@@ -590,7 +608,7 @@ def build() -> gr.Blocks:
 
         make_button.click(
             do_create,
-            [new_name, mode, size, base, custom_base, files, pasted, folder],
+            [new_name, mode, size, custom_size, base, custom_base, files, pasted, folder],
             [make_out, picker, picker, picker, card],
         )
         teach_button.click(

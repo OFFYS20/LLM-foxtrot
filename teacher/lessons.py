@@ -17,7 +17,15 @@ import torch
 from tokenizers import Tokenizer, decoders, models, pre_tokenizers, processors, trainers
 from transformers import PreTrainedTokenizerFast
 
-from ai_studio.models.transformer import SIZE_PRESETS, TransformerConfig, TransformerLM, preset_config
+from ai_studio.models.transformer import (
+    SIZE_PRESETS,
+    TransformerConfig,
+    TransformerLM,
+    design_config,
+    format_parameter_count,
+    parse_parameter_count,
+    preset_config,
+)
 from ai_studio.training.config import TrainingConfig, fit_batch_size, preflight
 from ai_studio.training.data import PackedLMDataset
 from ai_studio.training.trainer import Trainer, perplexity
@@ -48,16 +56,46 @@ SIZE_ALIASES = {
 }
 
 
-def resolve_size(name: str) -> str:
-    """Accept a number or one of the old adjectives."""
+def resolve_size(name: str) -> str | int:
+    """A named rung, or any number of parameters you care to ask for.
+
+    Returns the rung's key when it is one of the named ones, and a plain
+    integer otherwise — '50M', '512K', '3.5B' and '7000000' all work.
+    """
     key = str(name).strip().lower()
     key = SIZE_ALIASES.get(key, key)
-    if key not in SIZES:
+    if key in SIZES:
+        return key
+    try:
+        return parse_parameter_count(key)
+    except ValueError as exc:
         raise TeacherError(
-            f"Unknown size '{name}'. Choose one of: {', '.join(SIZES)}"
-            f" (or the older names: {', '.join(SIZE_ALIASES)})."
-        )
-    return key
+            f"{exc} The ready-made rungs are: {', '.join(SIZES)}"
+            f" (older names {', '.join(SIZE_ALIASES)} still work)."
+        ) from exc
+
+
+#: Weights alone, at four bytes each, against the memory this machine has. A
+#: model has to be built before it can be trained, and building it is where an
+#: impossible number stops being an abstraction.
+def check_it_can_exist(target: int) -> None:
+    from ai_studio.hardware.monitor import monitor
+
+    weights_gb = target * 4 / 1024 ** 3
+    snapshot = monitor.snapshot()
+    available_gb = snapshot.ram_available_gb or 0
+    if not available_gb or weights_gb <= available_gb * 0.6:
+        return
+
+    raise TeacherError(
+        f"{format_parameter_count(target)} parameters cannot be built here.\n"
+        f"  The weights alone would be {weights_gb:,.1f} GB at four bytes each, and "
+        f"this machine has {available_gb:.1f} GB free.\n"
+        f"  Training needs roughly four times the weights again, for gradients and "
+        f"the optimizer.\n"
+        f"  The largest that would fit here is around "
+        f"{format_parameter_count(int(available_gb * 0.6 * 1024 ** 3 / 4))}."
+    )
 
 #: Pretrained starting points that are realistic to fine-tune at home. Anything
 #: on the Hub works with --base, these are just the ones worth suggesting.
@@ -125,19 +163,31 @@ def create(model: Model, material: Material, size: str, *, context: int = 0) -> 
             f"Give it at least {MIN_CHARACTERS:,}; a few hundred KB is a sensible start."
         )
 
-    preset_name = SIZES[size][0]
-    preset = SIZE_PRESETS[preset_name]
+    named = isinstance(size, str)
+    if named:
+        preset_name = SIZES[size][0]
+        ceiling = SIZE_PRESETS[preset_name]["vocab_size"]
+    else:
+        check_it_can_exist(size)
+        preset_name = f"{format_parameter_count(size).lower()}-asked-for"
+        # Embeddings are vocabulary times width. Past about a quarter of the
+        # budget there is nothing left for layers, and a model that is all
+        # embedding table learns nothing.
+        ceiling = max(256, min(32000, size // 256))
 
     # A vocabulary larger than the text can support wastes most of the model's
-    # parameters on embeddings it never learns, so cap it by corpus size.
-    affordable = max(256, min(preset["vocab_size"], material.characters // 40))
+    # parameters on embeddings it never learns, so cap it by corpus size too.
+    affordable = max(256, min(ceiling, material.characters // 40))
     tokenizer = train_tokenizer(material.text, affordable)
     actual_vocab = tokenizer.get_vocab_size()
 
     overrides = {"vocab_size": actual_vocab}
     if context:
         overrides["max_position_embeddings"] = context
-    config: TransformerConfig = preset_config(preset_name, **overrides)
+    if named:
+        config: TransformerConfig = preset_config(preset_name, **overrides)
+    else:
+        config = design_config(size, **overrides)
     problems = config.validate()
     if problems:
         raise TeacherError("This architecture will not build: " + "; ".join(problems))
@@ -148,12 +198,20 @@ def create(model: Model, material: Material, size: str, *, context: int = 0) -> 
     network = TransformerLM(config)
     network.save_pretrained(str(model.path))
 
+    built = config.parameter_count()["total"]
     return {
-        "size": size,
+        "size": size if named else format_parameter_count(size),
         "preset": preset_name,
+        "asked_for": None if named else size,
+        # Widths move in steps, so a number you asked for usually lands a little
+        # either side. Reporting what was asked for would be a small lie that
+        # compounds every time someone repeats it.
+        "parameters": built,
         "vocab_size": actual_vocab,
-        "parameters": config.parameter_count()["total"],
         "context": config.max_position_embeddings,
+        "layers": config.num_layers,
+        "hidden_size": config.hidden_size,
+        "heads": config.num_heads,
     }
 
 

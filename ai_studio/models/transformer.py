@@ -12,6 +12,8 @@ instantiated module.
 
 from __future__ import annotations
 
+import re
+
 import json
 import math
 from dataclasses import asdict, dataclass, field
@@ -633,3 +635,131 @@ def preset_config(preset: str, **overrides: Any) -> TransformerConfig:
     if preset not in SIZE_PRESETS:
         raise ValueError(f"Unknown preset {preset!r}; choose from {list(SIZE_PRESETS)}")
     return TransformerConfig(**{**SIZE_PRESETS[preset], **overrides})
+
+
+# --------------------------------------------------------- sizes by the number
+#: What a suffix multiplies by. Q is quadrillion (1e15) — it is here so that
+#: asking for one gets an answer about why it cannot be built, rather than a
+#: parse error that says nothing.
+SIZE_SUFFIXES = {
+    "": 1, "K": 10**3, "M": 10**6, "B": 10**9, "G": 10**9,
+    "T": 10**12, "P": 10**15, "Q": 10**15,
+}
+
+SIZE_PATTERN = re.compile(
+    r"^\s*([0-9]+(?:[._][0-9]+)?)\s*([KMBGTPQ]?)\s*(?:params?|parameters?)?\s*$",
+    re.IGNORECASE,
+)
+
+
+def parse_parameter_count(text: str) -> int:
+    """Turn '50M', '1.5b', '70k' or '250000' into a number of parameters."""
+    match = SIZE_PATTERN.match(str(text))
+    if not match:
+        raise ValueError(
+            f"Cannot read {text!r} as a number of parameters. "
+            f"Write it like 70K, 50M, 1.5B or 250000."
+        )
+    number, suffix = match.groups()
+    value = float(number.replace("_", "."))
+    total = int(round(value * SIZE_SUFFIXES[suffix.upper()]))
+    if total < 1:
+        raise ValueError("A model needs at least one parameter.")
+    return total
+
+
+def format_parameter_count(total: int) -> str:
+    """The shortest honest way to write a parameter count."""
+    for limit, suffix in ((10**15, "Q"), (10**12, "T"), (10**9, "B"), (10**6, "M"), (10**3, "K")):
+        if total >= limit:
+            scaled = total / limit
+            return f"{scaled:.0f}{suffix}" if scaled >= 100 else f"{scaled:.2f}".rstrip("0").rstrip(".") + suffix
+    return str(total)
+
+
+#: Deeper models are better at the same parameter count, up to a point, but a
+#: very deep narrow model trains badly. This is the shape ordinary models of a
+#: given size have: about eight layers at a million parameters, rising slowly.
+def suggest_depth(target: int) -> int:
+    import math
+
+    scale = math.log10(max(target, 10**4) / 10**6)
+    return max(2, min(96, round(8 + 6 * scale)))
+
+
+def design_config(
+    target: int,
+    *,
+    vocab_size: int = 32000,
+    num_layers: int | None = None,
+    max_position_embeddings: int = 1024,
+    **overrides: Any,
+) -> TransformerConfig:
+    """Build the architecture whose parameter count is closest to ``target``.
+
+    The count is analytic, so this is a search and not an estimate: depths and
+    widths are tried until the exact parameter count of the resulting model is
+    as near the target as any buildable shape gets.
+
+    What comes back is never a promise of the number asked for. Widths move in
+    steps, so most targets land a little either side, and the caller is
+    expected to report the number it actually got rather than the one it asked
+    for.
+    """
+    best: TransformerConfig | None = None
+    best_error = float("inf")
+
+    def consider(hidden: int, layers: int, head_dim: int) -> TransformerConfig | None:
+        heads = hidden // head_dim
+        if heads < 1 or hidden % heads:
+            return None
+        return TransformerConfig(
+            hidden_size=hidden,
+            num_layers=layers,
+            num_heads=heads,
+            num_kv_heads=heads,
+            intermediate_size=None,
+            max_position_embeddings=max_position_embeddings,
+            vocab_size=vocab_size,
+            **overrides,
+        )
+
+    suggested = suggest_depth(target)
+    depths = [num_layers] if num_layers else sorted(
+        {max(1, suggested + offset) for offset in range(-6, 7)}
+    )
+
+    for head_dim in (64, 32, 16, 8):
+        # Sixty-four is the ordinary head width and the one attention kernels
+        # are tuned for. Narrower heads are tried only when the wider ones
+        # cannot get close — for a small target the narrowest 64-wide model may
+        # already be bigger than what was asked for. Forty-seven heads of
+        # eight is a worse model than one two per cent off the number.
+        if best_error <= target * 0.01:
+            break
+        for layers in depths:
+            low, high = 1, 2
+            while True:
+                candidate = consider(high * head_dim, layers, head_dim)
+                if candidate is None or candidate.parameter_count()["total"] >= target \
+                        or high >= 8192:
+                    break
+                high *= 2
+            while low < high:
+                middle = (low + high + 1) // 2
+                candidate = consider(middle * head_dim, layers, head_dim)
+                if candidate is not None and candidate.parameter_count()["total"] <= target:
+                    low = middle
+                else:
+                    high = middle - 1
+            for width in (low, low + 1):
+                candidate = consider(width * head_dim, layers, head_dim)
+                if candidate is None:
+                    continue
+                error = abs(candidate.parameter_count()["total"] - target)
+                if error < best_error:
+                    best, best_error = candidate, error
+
+    if best is None:  # pragma: no cover - only if every shape was rejected
+        raise ValueError(f"No architecture could be built for {target:,} parameters.")
+    return best

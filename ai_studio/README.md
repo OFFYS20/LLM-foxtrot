@@ -567,7 +567,7 @@ These are enforced in the code, not just documented:
 
 ## Licensing
 
-AI Studio itself is MIT-licensed. **That licence covers this application only.**
+AI Studio itself is under the Apache License 2.0. **That licence covers this application only.**
 
 Model weights, datasets and benchmarks you download carry their own terms —
 Llama's community licence, Gemma's terms, CC-BY-NC datasets, benchmark usage

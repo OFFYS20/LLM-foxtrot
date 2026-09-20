@@ -359,3 +359,81 @@ def test_the_batch_never_starves_the_run_of_steps():
         num_layers=4, num_heads=4, intermediate_size=512, vocab_size=4096)
     assert 200 // chosen >= MIN_STEPS_PER_EPOCH
     assert "steps" in why, "it must say the data was the limit, not the memory"
+
+
+# --------------------------------------------------- any size you care to ask
+import pytest as _pytest  # noqa: E402
+
+
+@_pytest.mark.parametrize("text,expected", [
+    ("70K", 70_000), ("70k", 70_000), ("50M", 50_000_000), ("1.5B", 1_500_000_000),
+    ("1b", 1_000_000_000), ("2T", 2 * 10**12), ("1Q", 10**15), ("250000", 250_000),
+    ("  7 m  ", 7_000_000), ("100 params", 100), ("3G", 3 * 10**9),
+])
+def test_a_size_can_be_written_the_way_people_write_it(text, expected):
+    from ai_studio.models.transformer import parse_parameter_count
+
+    assert parse_parameter_count(text) == expected
+
+
+@_pytest.mark.parametrize("text", ["nonsense", "", "M", "-5M", "5X", "5.5.5M", "big"])
+def test_a_size_that_is_not_a_number_says_so(text):
+    from ai_studio.models.transformer import parse_parameter_count
+
+    with _pytest.raises(ValueError, match="70K|at least one"):
+        parse_parameter_count(text)
+
+
+@_pytest.mark.parametrize("target", [70_000, 1_000_000, 5_000_000, 50_000_000,
+                                     51_000_000, 137_000_000, 1_500_000_000])
+def test_the_architecture_built_is_near_the_number_asked_for(target):
+    """The parameter count is analytic, so this is a search, not a guess."""
+    from ai_studio.models.transformer import design_config
+
+    vocab = max(256, min(32000, target // 256))
+    built = design_config(target, vocab_size=vocab).parameter_count()["total"]
+    assert abs(built / target - 1) < 0.05, f"asked {target:,}, got {built:,}"
+
+
+def test_two_nearby_sizes_give_two_different_models():
+    """50M and 51M must not quietly collapse to the same architecture."""
+    from ai_studio.models.transformer import design_config
+
+    fifty = design_config(50_000_000, vocab_size=32000)
+    fifty_one = design_config(51_000_000, vocab_size=32000)
+    assert fifty.parameter_count()["total"] != fifty_one.parameter_count()["total"]
+
+
+def test_the_heads_divide_the_width_evenly():
+    from ai_studio.models.transformer import design_config
+
+    for target in (70_000, 5_000_000, 200_000_000, 3_000_000_000):
+        config = design_config(target, vocab_size=max(256, min(32000, target // 256)))
+        assert config.hidden_size % config.num_heads == 0
+        assert not config.validate(), config.validate()
+
+
+def test_an_ordinary_size_gets_ordinary_shaped_heads():
+    """Forty-seven heads of eight is a worse model than one 2% off the number."""
+    from ai_studio.models.transformer import design_config
+
+    config = design_config(200_000_000, vocab_size=32000)
+    assert config.hidden_size // config.num_heads == 64
+
+
+def test_bigger_targets_get_deeper_models():
+    from ai_studio.models.transformer import suggest_depth
+
+    depths = [suggest_depth(n) for n in (10**5, 10**6, 10**8, 10**9, 10**10)]
+    assert depths == sorted(depths)
+    assert all(2 <= d <= 96 for d in depths)
+
+
+@_pytest.mark.parametrize("total,expected", [
+    (999, "999"), (70_000, "70K"), (5_000_000, "5M"), (1_500_000_000, "1.5B"),
+    (10**12, "1T"), (10**15, "1Q"),
+])
+def test_a_parameter_count_reads_the_way_it_was_written(total, expected):
+    from ai_studio.models.transformer import format_parameter_count
+
+    assert format_parameter_count(total) == expected

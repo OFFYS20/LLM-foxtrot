@@ -122,7 +122,7 @@ Add `--json` to any command for one machine-readable object instead of prose.
 |---|---|---|
 | any | `--json` | One JSON object instead of prose |
 | any | `--version` | Print the version |
-| `new` | `--size` | `1m`, `10m`, `100m`, `200m`, `500m`, `1b` — from scratch only |
+| `new` | `--size` | Any parameter count (`70K`, `51M`, `1.5B`) or a rung — from scratch only |
 | `new` | `--base` | Start from a pretrained model instead |
 | `new` | `--context` | Context length in tokens, from scratch |
 | `new` | `--replace` | Overwrite a model of the same name |
@@ -177,10 +177,45 @@ One limit: the Bench web page only runs models built from scratch here, so
 | `500m` | 500M | a GPU with room to spare and a great deal of text |
 | `1b` | 1B | a serious GPU (24GB+) and gigabytes of text |
 
-The rungs are named after the thing that distinguishes them, because there is
-no sensible adjective between "medium" and "large" and guessing at one is how
-people train the wrong size. The older names still work: `tiny`, `small`,
-`medium`, `large` and `huge` mean 1m, 10m, 100m, 500m and 1b.
+Those are shortcuts. **`--size` takes any number of parameters you care to
+name** — `70K`, `5M`, `51M`, `1.5B`, `250000`:
+
+```bash
+python -m teacher new bookbot --size 51M --from ./my-books
+```
+
+```
+  size:       51M (51m-asked-for)
+  parameters: 51.08M  (you asked for 51.00M, +0.2%)
+  widths move in steps, so a number lands near rather than on
+  shape:      448 wide, 20 layers, 7 heads
+```
+
+The parameter count of a transformer is exact arithmetic, so Teacher *searches*
+for the architecture nearest your number rather than estimating one: depths
+around a sensible aspect ratio, widths in steps of the head size. Most targets
+land within half a per cent. **It reports what it built, not what you asked
+for** — reporting the number you asked for would be a small lie that compounds
+every time someone repeats it.
+
+Heads are 64 wide, the size attention kernels are tuned for. Narrower heads are
+tried only when a 64-wide one cannot get within one per cent — for a very small
+target the narrowest ordinary model is already bigger than you asked for.
+
+The older names still work: `tiny`, `small`, `medium`, `large` and `huge` mean
+1m, 10m, 100m, 500m and 1b.
+
+A number this machine cannot hold is refused before anything is built, with the
+arithmetic and with what would fit:
+
+```
+Stopped: 100T parameters cannot be built here.
+  The weights alone would be 372,529.0 GB at four bytes each, and this machine
+  has 15.0 GB free.
+  Training needs roughly four times the weights again, for gradients and the
+  optimizer.
+  The largest that would fit here is around 2.41B.
+```
 
 The vocabulary is sized to your corpus, so a small corpus builds a model
 somewhat under the tier's name — a vocabulary larger than the text can support

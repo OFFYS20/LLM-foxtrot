@@ -144,7 +144,15 @@ def cmd_new(args) -> int:
         say(f"\n{style('Building ' + model.name, BOLD)}")
         built = lessons.create(model, material, args.size, context=args.context)
         say(f"  size:       {built['size']} ({built['preset']})")
-        say(f"  parameters: {fmt_count(built['parameters'])}")
+        if built.get("asked_for"):
+            drift = built["parameters"] / built["asked_for"] - 1
+            say(f"  parameters: {fmt_count(built['parameters'])}  "
+                f"(you asked for {fmt_count(built['asked_for'])}, {drift * 100:+.1f}%)")
+            say(style("  widths move in steps, so a number lands near rather than on", DIM))
+        else:
+            say(f"  parameters: {fmt_count(built['parameters'])}")
+        say(f"  shape:      {built['hidden_size']} wide, {built['layers']} layers, "
+            f"{built['heads']} heads")
         say(f"  vocabulary: {built['vocab_size']:,} tokens")
         say(f"  context:    {built['context']} tokens")
     say(style(f"  stored in {model.path}", DIM))
@@ -421,8 +429,11 @@ THE COMMANDS
   {python} -m teacher --json new NAME --base small --from PATH
       Make a model starting from a pretrained one (best output, needs a
       download). Drop --base to build from scratch instead, which also takes
-      --size 1m|10m|100m|200m|500m|1b. Anything past 10m wants a GPU; do not
-      choose one on a laptop.
+      --size takes any parameter count — 70K, 5M, 51M, 1.5B — or one of the
+      rungs 1m|10m|100m|200m|500m|1b. It reports what it built, which lands
+      near your number rather than on it; quote the built number, not the one
+      you asked for. Anything past 10m wants a GPU; do not choose one on a
+      laptop. A number this machine cannot hold is refused with the arithmetic.
 
   {python} -m teacher --json teach NAME --from PATH --until best
       Teach it until it stops improving. Add --epochs N to set the size of one
@@ -790,10 +801,10 @@ def build_parser() -> argparse.ArgumentParser:
     new = subs.add_parser("new", help="build a new model and teach it its first lesson")
     new.add_argument("name")
     new.add_argument("--size", default="1m", metavar="SIZE",
-                     help="how big to make it from scratch: "
+                     help="how big to make it from scratch — any number of parameters "
+                          "(70K, 50M, 1.5B, 7000000), or a ready-made rung: "
                           + ", ".join(lessons.SIZES)
-                          + " (default 1m; the older names tiny/small/medium/large/huge "
-                            "still work)")
+                          + " (default 1m; tiny/small/medium/large/huge still work)")
     new.add_argument("--base", metavar="MODEL",
                      help="start from a pretrained model instead of from noise — a shortcut ("
                           + ", ".join(lessons.BASES) + ") or any Hugging Face name")

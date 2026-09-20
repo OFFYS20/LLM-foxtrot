@@ -115,6 +115,16 @@ Leave `--base` out to build from scratch instead. Then `--size` applies:
 | `500m` | 500M | a GPU with room to spare |
 | `1b` | 1B | a serious GPU (24GB+) and gigabytes of text |
 
+Those are shortcuts. **`--size` takes any number of parameters**: `70K`, `5M`,
+`51M`, `1.5B`, `250000`. Teacher searches for the architecture whose exact
+parameter count is nearest the number, and **reports what it built rather than
+what was asked for** — usually within half a per cent. Tell them the built
+number, not the requested one.
+
+A number the machine cannot hold is refused before anything is built, with the
+arithmetic and with the largest that would fit. Relay that; do not retry with
+the same number.
+
 The older names `tiny`, `small`, `medium`, `large`, `huge` still work and mean
 1m, 10m, 100m, 500m, 1b.
 
@@ -386,7 +396,7 @@ the last completed round is on disk and nothing is corrupted.
 
 ## Part 10 — Licensing
 
-The software is MIT. **That covers this application only.** Model weights,
+The software is under the Apache License 2.0. **That covers this application only.** Model weights,
 datasets, benchmark splits and web pages carry their own terms — a licence here
 is not permission to use or redistribute someone else's work. Every page
 fetched from the web is saved with its address and the date so the provenance
