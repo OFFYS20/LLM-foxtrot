@@ -437,3 +437,31 @@ def test_a_parameter_count_reads_the_way_it_was_written(total, expected):
     from ai_studio.models.transformer import format_parameter_count
 
     assert format_parameter_count(total) == expected
+
+
+def test_the_context_length_is_proportional_to_the_model():
+    """Attention scales with this, so a long context on a small model costs
+    far more than it buys."""
+    from ai_studio.models.transformer import suggest_context
+
+    lengths = [suggest_context(n) for n in (10**6, 10**7, 5 * 10**8, 5 * 10**9)]
+    assert lengths == sorted(lengths)
+    assert lengths[0] == 256 and lengths[-1] == 2048
+
+
+def test_a_small_model_is_not_given_a_huge_context():
+    from ai_studio.models.transformer import design_config
+
+    assert design_config(1_000_000, vocab_size=5000).max_position_embeddings == 256
+
+
+def test_shapes_stay_near_the_depth_ordinary_models_have():
+    """64 wide by 14 layers is the same count as 128 by 4, and trains far more
+    slowly for it."""
+    from ai_studio.models.transformer import design_config, suggest_depth
+
+    for target in (4_000_000, 50_000_000, 200_000_000):
+        config = design_config(target, vocab_size=32000)
+        assert abs(config.num_layers - suggest_depth(target)) <= 4, (
+            f"{target:,} gave {config.num_layers} layers, "
+            f"{suggest_depth(target)} suggested")

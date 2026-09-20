@@ -18,13 +18,11 @@ from tokenizers import Tokenizer, decoders, models, pre_tokenizers, processors, 
 from transformers import PreTrainedTokenizerFast
 
 from ai_studio.models.transformer import (
-    SIZE_PRESETS,
     TransformerConfig,
     TransformerLM,
     design_config,
     format_parameter_count,
     parse_parameter_count,
-    preset_config,
 )
 from ai_studio.training.config import TrainingConfig, fit_batch_size, preflight
 from ai_studio.training.data import PackedLMDataset
@@ -33,17 +31,17 @@ from ai_studio.training.trainer import Trainer, perplexity
 from teacher.material import Material
 from teacher.workspace import Model, TeacherError
 
-#: The ladder, named by the thing that actually distinguishes the rungs. The
-#: old adjectives still work — there is no sensible adjective between "medium"
-#: and "large", and guessing at one is how people end up training the wrong
-#: size.
+#: Common sizes, offered as a shortcut. They are nothing more than numbers —
+#: --size takes any count you name, and every one of them, these included,
+#: goes through the same search. A name that quietly meant "near enough" would
+#: be the one case where the number you wrote is not the number you get.
 SIZES = {
-    "1m": ("nano-1m", "learns grammar in minutes on a laptop CPU"),
-    "10m": ("tiny-10m", "a few MB of text and some patience; still fine on a CPU"),
-    "100m": ("base-100m", "wants a GPU and a library's worth of text"),
-    "200m": ("mid-200m", "a GPU with 8GB or so, and a lot of text"),
-    "500m": ("large-500m", "a GPU with room to spare and a great deal of text"),
-    "1b": ("huge-1b", "a serious GPU (24GB+) and gigabytes of text"),
+    "1m": (1_000_000, "learns grammar in minutes on a laptop CPU"),
+    "10m": (10_000_000, "a few MB of text and some patience; still fine on a CPU"),
+    "100m": (100_000_000, "wants a GPU and a library's worth of text"),
+    "200m": (200_000_000, "a GPU with 8GB or so, and a lot of text"),
+    "500m": (500_000_000, "a GPU with room to spare and a great deal of text"),
+    "1b": (1_000_000_000, "a serious GPU (24GB+) and gigabytes of text"),
 }
 
 #: What --size used to be called. Kept so older commands and scripts still run.
@@ -56,21 +54,22 @@ SIZE_ALIASES = {
 }
 
 
-def resolve_size(name: str) -> str | int:
-    """A named rung, or any number of parameters you care to ask for.
+def resolve_size(name: str) -> int:
+    """How many parameters were asked for.
 
-    Returns the rung's key when it is one of the named ones, and a plain
-    integer otherwise — '50M', '512K', '3.5B' and '7000000' all work.
+    A count written any ordinary way — 70K, 4m, 1.5B, 250000 — or one of the
+    shortcut names. Either way the answer is a number, because either way the
+    same search runs against it.
     """
     key = str(name).strip().lower()
     key = SIZE_ALIASES.get(key, key)
     if key in SIZES:
-        return key
+        return SIZES[key][0]
     try:
         return parse_parameter_count(key)
     except ValueError as exc:
         raise TeacherError(
-            f"{exc} The ready-made rungs are: {', '.join(SIZES)}"
+            f"{exc} There are shortcuts too: {', '.join(SIZES)}"
             f" (older names {', '.join(SIZE_ALIASES)} still work)."
         ) from exc
 
@@ -96,6 +95,7 @@ def check_it_can_exist(target: int) -> None:
         f"  The largest that would fit here is around "
         f"{format_parameter_count(int(available_gb * 0.6 * 1024 ** 3 / 4))}."
     )
+
 
 #: Pretrained starting points that are realistic to fine-tune at home. Anything
 #: on the Hub works with --base, these are just the ones worth suggesting.
@@ -163,20 +163,14 @@ def create(model: Model, material: Material, size: str, *, context: int = 0) -> 
             f"Give it at least {MIN_CHARACTERS:,}; a few hundred KB is a sensible start."
         )
 
-    named = isinstance(size, str)
-    if named:
-        preset_name = SIZES[size][0]
-        ceiling = SIZE_PRESETS[preset_name]["vocab_size"]
-    else:
-        check_it_can_exist(size)
-        preset_name = f"{format_parameter_count(size).lower()}-asked-for"
-        # Embeddings are vocabulary times width. Past about a quarter of the
-        # budget there is nothing left for layers, and a model that is all
-        # embedding table learns nothing.
-        ceiling = max(256, min(32000, size // 256))
+    target = size
+    check_it_can_exist(target)
 
-    # A vocabulary larger than the text can support wastes most of the model's
-    # parameters on embeddings it never learns, so cap it by corpus size too.
+    # Embeddings are vocabulary times width. Past about a quarter of the budget
+    # there is nothing left for layers, and a model that is all embedding table
+    # learns nothing. A vocabulary larger than the text can support is wasted
+    # too, so the corpus caps it as well.
+    ceiling = max(256, min(32000, target // 256))
     affordable = max(256, min(ceiling, material.characters // 40))
     tokenizer = train_tokenizer(material.text, affordable)
     actual_vocab = tokenizer.get_vocab_size()
@@ -184,10 +178,9 @@ def create(model: Model, material: Material, size: str, *, context: int = 0) -> 
     overrides = {"vocab_size": actual_vocab}
     if context:
         overrides["max_position_embeddings"] = context
-    if named:
-        config: TransformerConfig = preset_config(preset_name, **overrides)
-    else:
-        config = design_config(size, **overrides)
+    # Designed against the vocabulary this corpus actually produced. A preset
+    # sized for a 32,000-token vocabulary misses badly once the corpus caps it.
+    config: TransformerConfig = design_config(target, **overrides)
     problems = config.validate()
     if problems:
         raise TeacherError("This architecture will not build: " + "; ".join(problems))
@@ -200,9 +193,8 @@ def create(model: Model, material: Material, size: str, *, context: int = 0) -> 
 
     built = config.parameter_count()["total"]
     return {
-        "size": size if named else format_parameter_count(size),
-        "preset": preset_name,
-        "asked_for": None if named else size,
+        "size": format_parameter_count(target),
+        "asked_for": target,
         # Widths move in steps, so a number you asked for usually lands a little
         # either side. Reporting what was asked for would be a small lie that
         # compounds every time someone repeats it.
@@ -786,9 +778,8 @@ def model_vocab(model: Model) -> int:
 
 
 def describe_sizes() -> str:
-    lines = []
-    for key, (preset, blurb) in SIZES.items():
-        params = preset_config(preset).parameter_count()["total"]
-        size = f"{params / 1e9:.1f}B" if params >= 1e9 else f"{params / 1e6:.0f}M"
-        lines.append(f"  {key:<7} {size:>5}  {blurb}")
+    lines = [f"  {key:<7} {format_parameter_count(target):>5}  {blurb}"
+             for key, (target, blurb) in SIZES.items()]
+    lines.append("")
+    lines.append("  or any count you name: 70K, 4M, 51M, 1.5B, 250000")
     return "\n".join(lines)

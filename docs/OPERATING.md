@@ -104,7 +104,20 @@ CPU), `gpt2` (124M), `medium` (SmolLM2-360M, wants a GPU), `tiny-test` (a stub
 for checking plumbing only). Any Hugging Face name works, and so does a local
 folder. `python -m teacher --json bases` lists them.
 
-Leave `--base` out to build from scratch instead. Then `--size` applies:
+Leave `--base` out to build from scratch instead. Then `--size` applies, and
+**it takes any number of parameters they name** — `70K`, `4m`, `51M`, `1.5B`,
+`250000`:
+
+```bash
+python -m teacher --json new bookbot --size 4M --from PATH
+```
+
+Teacher searches for the architecture whose exact parameter count is nearest
+the number and returns both `asked_for` and `parameters`. **Quote
+`parameters`, the number it built, not the one they asked for** — widths move
+in steps, so it lands near rather than on, usually within half a per cent.
+
+These are shortcuts for common numbers, and go through the same search:
 
 | `--size` | Parameters | What it needs |
 |---|---|---|
@@ -115,23 +128,15 @@ Leave `--base` out to build from scratch instead. Then `--size` applies:
 | `500m` | 500M | a GPU with room to spare |
 | `1b` | 1B | a serious GPU (24GB+) and gigabytes of text |
 
-Those are shortcuts. **`--size` takes any number of parameters**: `70K`, `5M`,
-`51M`, `1.5B`, `250000`. Teacher searches for the architecture whose exact
-parameter count is nearest the number, and **reports what it built rather than
-what was asked for** — usually within half a per cent. Tell them the built
-number, not the requested one.
+The older names `tiny`, `small`, `medium`, `large`, `huge` still work and mean
+1m, 10m, 100m, 500m, 1b.
 
 A number the machine cannot hold is refused before anything is built, with the
 arithmetic and with the largest that would fit. Relay that; do not retry with
 the same number.
 
-The older names `tiny`, `small`, `medium`, `large`, `huge` still work and mean
-1m, 10m, 100m, 500m, 1b.
-
-Note: the vocabulary is sized to the corpus, so a small corpus produces a model
-somewhat smaller than the tier name. That is deliberate — a vocabulary bigger
-than the text can support wastes parameters on embeddings that never get
-trained.
+The vocabulary is sized to their corpus, and the architecture is designed
+against that vocabulary — so the number is hit whatever the corpus size.
 
 Other flags on `new`: `--context N` (context length), `--replace` (overwrite a
 model of that name), `--no-teach` (build it but do not train yet),

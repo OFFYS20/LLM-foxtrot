@@ -687,12 +687,24 @@ def suggest_depth(target: int) -> int:
     return max(2, min(96, round(8 + 6 * scale)))
 
 
+def suggest_context(target: int) -> int:
+    """A context length in proportion to the model.
+
+    Attention and activations both scale with this, so a long context on a
+    small model costs far more than it buys.
+    """
+    for limit, length in ((5 * 10**6, 256), (10**8, 512), (10**9, 1024)):
+        if target < limit:
+            return length
+    return 2048
+
+
 def design_config(
     target: int,
     *,
     vocab_size: int = 32000,
     num_layers: int | None = None,
-    max_position_embeddings: int = 1024,
+    max_position_embeddings: int | None = None,
     **overrides: Any,
 ) -> TransformerConfig:
     """Build the architecture whose parameter count is closest to ``target``.
@@ -706,8 +718,11 @@ def design_config(
     expected to report the number it actually got rather than the one it asked
     for.
     """
+    max_position_embeddings = max_position_embeddings or suggest_context(target)
+
     best: TransformerConfig | None = None
     best_error = float("inf")
+    best_shape = float("inf")
 
     def consider(hidden: int, layers: int, head_dim: int) -> TransformerConfig | None:
         heads = hidden // head_dim
@@ -757,8 +772,15 @@ def design_config(
                 if candidate is None:
                     continue
                 error = abs(candidate.parameter_count()["total"] - target)
-                if error < best_error:
-                    best, best_error = candidate, error
+                # How far this shape is from the depth an ordinary model of
+                # this size has. Two architectures can hit the same number and
+                # be very different models: 64 wide by 14 layers is the same
+                # count as 128 by 4, and trains far more slowly for it.
+                shape = abs(layers - suggested)
+                close = target * 0.005
+                if (error + close < best_error) or (
+                        error < best_error + close and shape < best_shape):
+                    best, best_error, best_shape = candidate, min(error, best_error), shape
 
     if best is None:  # pragma: no cover - only if every shape was rejected
         raise ValueError(f"No architecture could be built for {target:,} parameters.")

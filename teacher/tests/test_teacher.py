@@ -189,32 +189,36 @@ def test_a_seed_repeats_the_same_answer(taught):
 
 
 # -------------------------------------------------------------------- sizes
-def test_every_size_is_near_the_number_it_is_named_after():
-    """A tier called 200m that builds a 90M model would be a lie in the name."""
-    from ai_studio.models.transformer import preset_config
-
-    for key, (preset, _blurb) in lessons.SIZES.items():
-        actual = preset_config(preset).parameter_count()["total"]
-        target = float(key[:-1]) * (1e9 if key.endswith("b") else 1e6)
-        assert 0.5 * target <= actual <= 2.0 * target, (
-            f"'{key}' builds {actual:,} parameters, not near {target:,.0f}"
-        )
+def test_a_shortcut_is_exactly_the_number_it_is_named_after():
+    """A name that quietly meant "near enough" would be the one case where the
+    number you wrote is not the number you get."""
+    for key, (target, _blurb) in lessons.SIZES.items():
+        written = float(key[:-1]) * (1e9 if key.endswith("b") else 1e6)
+        assert target == written, f"'{key}' asks for {target:,}, not {written:,.0f}"
 
 
-def test_the_sizes_climb():
-    from ai_studio.models.transformer import preset_config
+def test_the_shortcuts_climb():
+    targets = [target for target, _ in lessons.SIZES.values()]
+    assert targets == sorted(targets), "each shortcut must be bigger than the last"
 
-    counts = [preset_config(preset).parameter_count()["total"]
-              for preset, _ in lessons.SIZES.values()]
-    assert counts == sorted(counts), "each tier must be bigger than the last"
+
+def test_a_shortcut_goes_through_the_same_search_as_a_typed_number(material_dir):
+    """--size 1m and --size 1000000 must build the same model."""
+    named = workspace.get("by-name", must_exist=False)
+    typed = workspace.get("by-number", must_exist=False)
+    first = lessons.create(named, gather([str(material_dir)]), "1m", context=128)
+    second = lessons.create(typed, gather([str(material_dir)]), "1000000", context=128)
+
+    assert first["parameters"] == second["parameters"]
+    assert first["hidden_size"] == second["hidden_size"]
+    assert first["layers"] == second["layers"]
 
 
 def test_the_older_size_names_still_work():
     """Someone's script or notes should not break because the ladder was renamed."""
     for old_name, current in lessons.SIZE_ALIASES.items():
-        assert lessons.resolve_size(old_name) == current
-        assert current in lessons.SIZES
-    assert lessons.resolve_size("200M") == "200m", "case should not matter"
+        assert lessons.resolve_size(old_name) == lessons.SIZES[current][0]
+    assert lessons.resolve_size("200M") == 200_000_000, "case should not matter"
 
 
 def test_an_unknown_size_names_what_is_on_offer():
@@ -223,18 +227,21 @@ def test_an_unknown_size_names_what_is_on_offer():
     assert "200m" in str(excinfo.value) and "tiny" in str(excinfo.value)
 
 
-def test_every_size_names_a_real_preset():
-    from ai_studio.models.transformer import SIZE_PRESETS
-
-    for key, (preset, blurb) in lessons.SIZES.items():
-        assert preset in SIZE_PRESETS, f"{key} points at a preset that does not exist"
+def test_every_shortcut_says_what_it_needs():
+    for key, (target, blurb) in lessons.SIZES.items():
+        assert target > 0, f"{key} asks for nothing"
         assert blurb, f"{key} has no description"
 
 
 def test_describe_sizes_reads_billions_as_billions():
     listing = lessons.describe_sizes()
-    assert "1.0B" in listing, listing
-    assert "1019M" not in listing, "a billion-parameter model should not be shown in millions"
+    assert "1B" in listing, listing
+    assert "1000M" not in listing, "a billion-parameter model should not be shown in millions"
+
+
+def test_describe_sizes_says_a_number_can_be_typed():
+    """The shortcuts are a convenience, not the menu."""
+    assert "any count you name" in lessons.describe_sizes()
 
 
 # ------------------------------------------------------------------ verdict
@@ -702,9 +709,10 @@ def test_lora_is_refused_on_a_model_built_from_noise(taught, material_dir):
 
 
 # ------------------------------------------------- a size of your own choosing
-def test_a_named_rung_still_resolves_to_its_rung():
-    assert lessons.resolve_size("200m") == "200m"
-    assert lessons.resolve_size("tiny") == "1m"
+def test_a_shortcut_resolves_to_the_number_it_stands_for():
+    """Every size becomes a number, so every size takes the same path."""
+    assert lessons.resolve_size("200m") == 200_000_000
+    assert lessons.resolve_size("tiny") == 1_000_000
 
 
 def test_a_number_resolves_to_that_many_parameters():

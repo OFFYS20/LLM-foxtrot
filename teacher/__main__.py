@@ -143,14 +143,10 @@ def cmd_new(args) -> int:
     else:
         say(f"\n{style('Building ' + model.name, BOLD)}")
         built = lessons.create(model, material, args.size, context=args.context)
-        say(f"  size:       {built['size']} ({built['preset']})")
-        if built.get("asked_for"):
-            drift = built["parameters"] / built["asked_for"] - 1
-            say(f"  parameters: {fmt_count(built['parameters'])}  "
-                f"(you asked for {fmt_count(built['asked_for'])}, {drift * 100:+.1f}%)")
-            say(style("  widths move in steps, so a number lands near rather than on", DIM))
-        else:
-            say(f"  parameters: {fmt_count(built['parameters'])}")
+        drift = built["parameters"] / built["asked_for"] - 1
+        say(f"  asked for:  {fmt_count(built['asked_for'])} parameters")
+        say(f"  built:      {fmt_count(built['parameters'])}  ({drift * 100:+.1f}%)")
+        say(style("  widths move in steps, so a number lands near rather than on", DIM))
         say(f"  shape:      {built['hidden_size']} wide, {built['layers']} layers, "
             f"{built['heads']} heads")
         say(f"  vocabulary: {built['vocab_size']:,} tokens")
@@ -429,10 +425,10 @@ THE COMMANDS
   {python} -m teacher --json new NAME --base small --from PATH
       Make a model starting from a pretrained one (best output, needs a
       download). Drop --base to build from scratch instead, which also takes
-      --size takes any parameter count — 70K, 5M, 51M, 1.5B — or one of the
-      rungs 1m|10m|100m|200m|500m|1b. It reports what it built, which lands
-      near your number rather than on it; quote the built number, not the one
-      you asked for. Anything past 10m wants a GPU; do not choose one on a
+      --size takes any parameter count I name — 70K, 4M, 51M, 1.5B, 250000.
+      1m|10m|100m|200m|500m|1b are shortcuts for common numbers, nothing more.
+      The reply carries "asked_for" and "parameters"; quote "parameters", the
+      one it built. Anything past 10M wants a GPU; do not choose one on a
       laptop. A number this machine cannot hold is refused with the arithmetic.
 
   {python} -m teacher --json teach NAME --from PATH --until best

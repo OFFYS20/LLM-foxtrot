@@ -457,7 +457,7 @@ def build() -> gr.Blocks:
                             )
                         with gr.Group(visible=False) as scratch_group:
                             size = gr.Radio(
-                                [(f"{key} — {note}", key) for key, (_p, note) in lessons.SIZES.items()],
+                                [(f"{key} — {note}", key) for key, (_target, note) in lessons.SIZES.items()],
                                 value=next(iter(lessons.SIZES)), label="Size",
                             )
                             custom_size = gr.Textbox(

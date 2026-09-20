@@ -166,34 +166,27 @@ One limit: the Bench web page only runs models built from scratch here, so
 `pack` refuses an adopted one and says so. Chat with it in the window or with
 `teacher ask`.
 
-### Sizes (from scratch)
+### How big to make it
 
-| Size | Parameters | What it needs |
-|---|---|---|
-| `1m` | 1M | learns grammar in minutes on a laptop CPU |
-| `10m` | 10M | a few MB of text and some patience; still fine on a CPU |
-| `100m` | 100M | a GPU and a library's worth of text |
-| `200m` | 200M | a GPU with 8GB or so, and a lot of text |
-| `500m` | 500M | a GPU with room to spare and a great deal of text |
-| `1b` | 1B | a serious GPU (24GB+) and gigabytes of text |
-
-Those are shortcuts. **`--size` takes any number of parameters you care to
-name** — `70K`, `5M`, `51M`, `1.5B`, `250000`:
+**`--size` takes any number of parameters you care to name.**
 
 ```bash
-python -m teacher new bookbot --size 51M --from ./my-books
+python -m teacher new bookbot --size 4M --from ./my-books
 ```
 
 ```
-  size:       51M (51m-asked-for)
-  parameters: 51.08M  (you asked for 51.00M, +0.2%)
+  asked for:  4.00M parameters
+  built:      4.01M  (+0.2%)
   widths move in steps, so a number lands near rather than on
-  shape:      448 wide, 20 layers, 7 heads
+  shape:      160 wide, 10 layers, 5 heads
 ```
+
+`70K`, `4m`, `51M`, `1.5B`, `250000` — all of them work, and all of them go
+through the same search.
 
 The parameter count of a transformer is exact arithmetic, so Teacher *searches*
 for the architecture nearest your number rather than estimating one: depths
-around a sensible aspect ratio, widths in steps of the head size. Most targets
+around a sensible aspect ratio, widths in steps of the head size. Most numbers
 land within half a per cent. **It reports what it built, not what you asked
 for** — reporting the number you asked for would be a small lie that compounds
 every time someone repeats it.
@@ -201,6 +194,23 @@ every time someone repeats it.
 Heads are 64 wide, the size attention kernels are tuned for. Narrower heads are
 tried only when a 64-wide one cannot get within one per cent — for a very small
 target the narrowest ordinary model is already bigger than you asked for.
+
+The search runs against the vocabulary *your corpus actually produced*, which
+is why it hits the number where a fixed preset would not: a preset sized for a
+32,000-token vocabulary is ~18% light once a small corpus caps the vocabulary
+at five thousand.
+
+These are shortcuts, nothing more — each is just a number, and each goes
+through the same search as one you type:
+
+| Shortcut | Parameters | What it needs |
+|---|---|---|
+| `1m` | 1M | learns grammar in minutes on a laptop CPU |
+| `10m` | 10M | a few MB of text and some patience; still fine on a CPU |
+| `100m` | 100M | a GPU and a library's worth of text |
+| `200m` | 200M | a GPU with 8GB or so, and a lot of text |
+| `500m` | 500M | a GPU with room to spare and a great deal of text |
+| `1b` | 1B | a serious GPU (24GB+) and gigabytes of text |
 
 The older names still work: `tiny`, `small`, `medium`, `large` and `huge` mean
 1m, 10m, 100m, 500m and 1b.
@@ -217,14 +227,10 @@ Stopped: 100T parameters cannot be built here.
   The largest that would fit here is around 2.41B.
 ```
 
-The vocabulary is sized to your corpus, so a small corpus builds a model
-somewhat under the tier's name — a vocabulary larger than the text can support
-would waste most of those parameters on embeddings that never get trained.
-
-Start with `1m`. It will learn the shape of your text — sentence structure,
-punctuation, the rhythm of the source — within minutes on a CPU. Each step up
-needs roughly ten times the text and far more compute to be worth the wait; a
-tier too large for your material just memorises it.
+Start around `1M`. It will learn the shape of your text — sentence structure,
+punctuation, the rhythm of the source — within minutes on a CPU. Every tenfold
+step up needs roughly ten times the text and far more compute to be worth the
+wait; a model too large for your material just memorises it.
 
 Teacher will not start a run that cannot fit. Asking for `1b` on a laptop is
 refused before anything happens:
