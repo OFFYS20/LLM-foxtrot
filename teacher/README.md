@@ -105,6 +105,7 @@ of your data.
 | `show NAME` | One model's architecture and its full lesson history |
 | `pack NAME -o DIR` | Copies `model.safetensors`, `config.json` and `tokenizer.json` |
 | `compare A B ...` | The same prompt through two or more models, side by side |
+| `test NAME SUITE` | Runs a real benchmark suite and says what the score means |
 | `checkpoints NAME` | The saved states this model can go back to or branch from |
 | `branch NAME NEW` | Copies a model, or one of its saved states, into a new model |
 | `rollback NAME` | Undoes the last lesson, restoring the weights saved before it |
@@ -137,6 +138,7 @@ Add `--json` to any command for one machine-readable object instead of prose.
 | `new`, `teach` | `--keep N` | How many saved states to keep behind the model (default 2) |
 | `new`, `teach` | `--lora`, `--lora-rank N` | Train a small adapter instead of every weight (pretrained only) |
 | `compare` | `--prompt`, `--tokens`, `--seed`, sampling | What to say, how much, and with which dice |
+| `test` | `--items`, `--shots`, `--offline`, `--list` | How many questions, worked examples, and where the items come from |
 | `branch` | `--at STAMP` | Branch from a saved state instead of the current weights |
 | `rollback` | `--to STAMP` | Restore a named saved state instead of the newest |
 | `ask` | `--tokens`, `--temperature`, `--top-p`, `--top-k` | How much to generate and how adventurously |
@@ -620,6 +622,72 @@ LoRA lowers the optimizer and gradient cost, not the activation cost. A long
 sequence or a big batch still needs the memory it always did, which is what
 the preflight check is for — and it now accounts for depth, vocabulary and MLP
 width rather than guessing from a parameter count.
+
+### Is it any good? Benchmarks
+
+The held-out loss says whether a model is still learning. It says nothing
+about whether the model knows anything. For that there are nine real suites,
+the same ones AI Studio runs:
+
+```bash
+python -m teacher test --list
+python -m teacher test bookbot arc --items 20
+```
+
+```
+ARC-Challenge  —  7/20 (35%)
+guessing would score  25%
+0 worked example(s) in the prompt, 76s
+
+Indistinguishable from guessing. A model this size is expected to score at
+chance on this; it is not a fault.
+Benchmarks like this measure knowledge a model of this size was never going
+to hold.
+```
+
+That is a real run of SmolLM2-135M against the official ARC-Challenge split,
+and it is worth looking at closely. **35% against a 25% chance rate looks like
+a result, and is not one.** Twenty questions at a quarter has an expected
+score of five and a standard deviation of about two, so anything under nine
+right is inside the noise. A tool that printed "35%" and stopped would have
+told you something untrue. **Expect this.** A model of one to a few hundred million
+parameters scores at chance on knowledge benchmarks; they were built to
+separate models a thousand times larger. A score here is not a verdict on your
+training — it is a verdict on the size of the thing you trained.
+
+Three things this command insists on:
+
+**Where the questions came from.** Each suite loads the official split through
+`datasets`, or a local `.jsonl` you provide, and falls back to a handful of
+bundled example items when neither is available. Six questions is a check that
+the plumbing works, and it is labelled as such rather than reported as a score.
+`test --list` shows which you would get. `pip install datasets` for the real
+ones.
+
+**What chance looks like.** A four-choice question is 25% for a model that has
+learned nothing. That number is printed beside every score, because 25% on its
+own reads like a result.
+
+**Whether the number means anything.** With twenty items a score has to clear
+about two standard deviations of the chance rate before it is evidence of
+anything. Below that the command says so instead of letting you read a lead
+that is noise — 8 out of 20 against a quarter is not a finding; 160 out of 400
+is.
+
+| Suite | Measures |
+|---|---|
+| `mmlu`, `mmlu_pro` | knowledge and reasoning across academic subjects |
+| `arc` | grade-school science |
+| `gsm8k` | multi-step arithmetic |
+| `hellaswag`, `winogrande` | commonsense and pronoun resolution |
+| `truthfulqa` | questions where the common answer is wrong |
+| `humaneval`, `mbpp` | writing Python |
+
+`--items N` sets how many questions, `--shots N` how many worked examples go in
+the prompt (the default is whatever the suite specifies), and `--offline`
+skips the download and uses whatever is already here.
+
+Generation is greedy — temperature zero — so a run repeats exactly.
 
 ### Saved states: going back, and branching off
 

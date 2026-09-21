@@ -455,6 +455,15 @@ THE COMMANDS
       one's reply, stage and held-out loss, and whether those losses can be
       compared at all — they cannot across different vocabularies.
 
+  {python} -m teacher --json test NAME arc --items 20
+      Run a real benchmark suite. Returns accuracy, chance, beats_chance,
+      source and official. Read all of them: official:false means it ran on
+      bundled example items rather than the real split and is not a score, and
+      beats_chance:false means the result is within noise of guessing. A model
+      this size scoring at chance on a knowledge benchmark is expected and not
+      a fault — say so rather than letting me think training failed. Always
+      quote the chance rate beside the accuracy. --list shows every suite.
+
   {python} -m teacher --json checkpoints NAME
       The saved states this model can go back to or branch from, newest last.
 
@@ -687,6 +696,50 @@ def cmd_compare(args) -> int:
     return emit(command="compare", **result)
 
 
+def cmd_test(args) -> int:
+    """Sit a model down in front of a real benchmark suite."""
+    from teacher import exams
+
+    if args.list:
+        rows = exams.catalogue()
+        say(f"  {'SUITE':<12}{'NAME':<16}{'MEASURES':<16}{'ITEMS HERE':>11}")
+        for row in rows:
+            source = "sample" if row["source"] == "sample" else row["source"]
+            say(f"  {row['suite']:<12}{row['label']:<16}{row['category']:<16}"
+                f"{str(row['available']) + ' ' + source:>11}")
+        say(style("\n  'sample' means the bundled example items, not the real split.", DIM))
+        say(style("  pip install datasets — then the official splits download on first use.", DIM))
+        return emit(command="test", suites=rows)
+
+    if not args.name:
+        raise TeacherError("Name a model to test, or pass --list to see the suites.")
+    model = workspace.get(args.name)
+    say(f"{style(model.name + ' sitting ' + args.suite, BOLD)}")
+
+    def on_item(index, total, was_right):
+        say(style(f"  {index}/{total}  {'right' if was_right else 'wrong'}", DIM))
+
+    outcome = exams.sit(
+        model, args.suite, limit=args.items, few_shot=args.shots,
+        allow_download=not args.offline, on_item=on_item,
+    )
+
+    say("")
+    say(f"  {style(outcome['label'], BOLD)}  —  {outcome['correct']}/{outcome['items']} "
+        f"({outcome['accuracy'] * 100:.0f}%)")
+    if outcome["chance"] is not None:
+        say(f"  guessing would score  {outcome['chance'] * 100:.0f}%")
+    say(f"  {outcome['shots']} worked example(s) in the prompt, {outcome['seconds']:.0f}s")
+
+    if not outcome["official"]:
+        say(style(f"\n  {outcome['note']}", DIM))
+    say(f"\n  {exams.verdict(outcome)}")
+    if outcome["official"] and outcome["beats_chance"] is False:
+        say(style("  Benchmarks like this measure knowledge a model of this size "
+                  "was never going to hold.", DIM))
+    return emit(command="test", **outcome)
+
+
 def cmd_checkpoints(args) -> int:
     """The saved states a model can be rolled back to or branched from."""
     model = workspace.get(args.name)
@@ -897,6 +950,21 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("--seed", type=int, default=0,
                          help="the same for every model, so the dice are not the difference")
     compare.set_defaults(func=cmd_compare)
+
+    test = subs.add_parser(
+        "test", help="run a real benchmark suite against a model")
+    test.add_argument("name", nargs="?", help="the model to test")
+    test.add_argument("suite", nargs="?", default="mmlu",
+                      help="which suite (default mmlu); --list shows them all")
+    test.add_argument("--items", type=int, default=20,
+                      help="how many questions to ask (default 20)")
+    test.add_argument("--shots", type=int, default=None,
+                      help="worked examples in the prompt (default: the suite's own)")
+    test.add_argument("--offline", action="store_true",
+                      help="do not download the official split; use what is already here")
+    test.add_argument("--list", action="store_true",
+                      help="show every suite and where its items would come from")
+    test.set_defaults(func=cmd_test)
 
     checkpoints = subs.add_parser(
         "checkpoints", help="the saved states a model can go back to or branch from")

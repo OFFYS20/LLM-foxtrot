@@ -213,6 +213,28 @@ It also returns `losses_comparable`. **If that is false, do not say one model
 scored better.** A loss is an average over a model's vocabulary, and two models
 that carve text up differently are not on the same scale. Judge by reading.
 
+### Benchmarks
+
+```bash
+python -m teacher --json test NAME arc --items 20
+python -m teacher --json test --list
+```
+
+Nine real suites (MMLU, MMLU-Pro, GSM8K, ARC, HellaSwag, TruthfulQA,
+Winogrande, HumanEval, MBPP). The reply carries `accuracy`, `chance`,
+`beats_chance`, `source` and `official`.
+
+**Read those four together or you will mislead them.**
+
+- `official: false` means it ran on a handful of bundled example items, not the
+  real split. That is a plumbing check. Do not report it as a benchmark score.
+  `pip install datasets` gets the real ones.
+- `beats_chance: false` means the score is within noise of guessing. Say that
+  plainly. **A model of this size scoring at chance on a knowledge benchmark is
+  expected, not a fault** — these suites were built to separate models a
+  thousand times larger. Do not let them think the training failed.
+- Always quote `chance` next to `accuracy`. 25% on its own reads like a result.
+
 ### Saved states, going back, and branching
 
 ```bash
