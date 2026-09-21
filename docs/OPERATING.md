@@ -168,6 +168,17 @@ of one round (default 3), `--max-rounds N` caps them (default 20),
 still leaves enough optimizer steps to learn from. Use it when a GPU is sitting
 at half load. `--rate` sets the learning rate (default 3e-4).
 
+**More than one GPU** — `--gpus auto` spreads the lesson across every card:
+one process each, full copy of the model, different slice of the data,
+gradients averaged every step. `--gpus N` for a specific number, default 1.
+`--device auto|cpu|cuda` picks where to train.
+
+The batch they type is **per GPU**, so `--batch 8 --gpus 4` steps over 32
+sequences. Say the effective number if they ask about it.
+
+Do not suggest using the CPU and GPU together — it is slower, not faster,
+because every step waits for the slowest process. It is not offered.
+
 **Memory** — `--lora` trains a small adapter instead of every weight, which
 lets a bigger base fit on a smaller machine. Pretrained models only; it is
 refused on a from-scratch model, with a reason. `--lora-rank N` sets how much

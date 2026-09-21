@@ -149,6 +149,8 @@ class Trainer:
         on_log: Callable[[str, str], None] | None = None,
         on_checkpoint: Callable[[int, float, float | None, bool], None] | None = None,
         start_step: int = 0,
+        rank: int = 0,
+        world_size: int = 1,
     ) -> None:
         self.model = model
         self.train_dataset = train_dataset
@@ -160,6 +162,12 @@ class Trainer:
         self.on_log = on_log
         self.on_checkpoint = on_checkpoint
         self.start_step = start_step
+        #: Which process this is, of how many. One process is the ordinary case.
+        self.rank = int(rank)
+        self.world_size = max(1, int(world_size))
+        #: Everything a person reads — logs, metrics, checkpoints — comes from
+        #: one process. Four copies of the same progress bar is not progress.
+        self.is_leader = self.rank == 0
 
         self.optimizer: torch.optim.Optimizer | None = None
         self.scheduler: Any = None
@@ -169,6 +177,8 @@ class Trainer:
 
     # ---------------------------------------------------------------- setup
     def _log(self, message: str, level: str = "info") -> None:
+        if not self.is_leader:
+            return
         if self.on_log:
             self.on_log(message, level)
         else:
@@ -271,10 +281,23 @@ class Trainer:
         tune_runtime(self.device, threads=self.config.num_threads)
         started = time.time()
 
+        sampler = None
+        if self.world_size > 1:
+            from torch.utils.data.distributed import DistributedSampler
+
+            # Each process sees a different slice of each epoch; without this
+            # every process would train on the same batches and the run would
+            # be N copies of one job rather than one job done N ways.
+            sampler = DistributedSampler(
+                self.train_dataset, num_replicas=self.world_size, rank=self.rank,
+                shuffle=True, seed=self.config.seed, drop_last=False,
+            )
+
         train_loader = DataLoader(
             self.train_dataset,
             batch_size=self.config.batch_size,
-            shuffle=True,
+            sampler=sampler,
+            shuffle=sampler is None,
             collate_fn=collate,
             # The dataset is one tensor in memory and a batch is a slice of it,
             # so worker processes would add spawn and IPC cost to a memcpy.
@@ -297,6 +320,20 @@ class Trainer:
 
         self.optimizer = self.build_optimizer()
         self.scheduler = self.build_scheduler(self.optimizer, total_steps)
+
+        # Build the optimizer over the real parameters, then wrap: DDP averages
+        # the gradients across processes at each backward pass.
+        self.wrapped = self.model
+        if self.world_size > 1:
+            from torch.nn.parallel import DistributedDataParallel
+
+            self.wrapped = DistributedDataParallel(
+                self.model,
+                device_ids=[self.device.index] if self.device.type == "cuda" else None,
+                output_device=self.device.index if self.device.type == "cuda" else None,
+                find_unused_parameters=False,
+            )
+
         dtype, autocast_enabled = self._resolve_dtype()
         scaler = torch.amp.GradScaler("cuda", enabled=autocast_enabled and dtype is torch.float16)
 
@@ -330,6 +367,9 @@ class Trainer:
 
             while step < total_steps and not self.control.stopping:
                 epoch_index += 1
+                if sampler is not None:
+                    # Without this the shuffle is identical every epoch.
+                    sampler.set_epoch(epoch_index)
                 if self.config.max_steps <= 0 and epoch_index > math.ceil(self.config.epochs):
                     break
 
@@ -350,7 +390,7 @@ class Trainer:
                         with torch.autocast(
                             device_type=self.device.type, dtype=dtype, enabled=autocast_enabled
                         ):
-                            outputs = self.model(**batch)
+                            outputs = self.wrapped(**batch)
                             loss = outputs["loss"] if isinstance(outputs, dict) else outputs.loss
                             if loss is None:
                                 raise TrainingError("The model returned no loss — are labels present?")
@@ -496,9 +536,17 @@ class Trainer:
         if data is None or len(data) == 0:
             return None
 
+        sampler = None
+        if self.world_size > 1:
+            from torch.utils.data.distributed import DistributedSampler
+
+            sampler = DistributedSampler(
+                data, num_replicas=self.world_size, rank=self.rank, shuffle=False)
+
         loader = DataLoader(
             data,
             batch_size=self.config.batch_size,
+            sampler=sampler,
             shuffle=False,
             collate_fn=collate,
             num_workers=0,
@@ -518,6 +566,18 @@ class Trainer:
             if loss is not None:
                 total += float(loss)
                 batches += 1
+
+        if self.world_size > 1:
+            # Each process saw a different slice, so the held-out loss has to be
+            # pooled. Reporting one process's slice would make the number depend
+            # on how many cards happened to be in the machine.
+            import torch.distributed as dist
+
+            pooled = torch.tensor([total, float(batches)], dtype=torch.float64,
+                                  device=self.device)
+            dist.all_reduce(pooled, op=dist.ReduceOp.SUM)
+            total, batches = pooled[0].item(), int(pooled[1].item())
+
         return total / batches if batches else None
 
     def _oom_error(self, exc: BaseException) -> OutOfMemoryError:

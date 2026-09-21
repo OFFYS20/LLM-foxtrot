@@ -33,6 +33,22 @@ _lock = threading.Lock()
 
 
 # ------------------------------------------------------------------ helpers
+def hardware() -> dict:
+    """What this machine has to train on."""
+    from ai_studio.training import distributed
+
+    return distributed.describe()
+
+
+def hardware_summary() -> str:
+    facts = hardware()
+    if not facts["gpus"]:
+        return "no GPU found — training on the CPU"
+    if facts["gpus"] == 1:
+        return f"one GPU: {facts['names'][0]}"
+    return f"{facts['gpus']} GPUs, gradients averaged between them"
+
+
 def model_names() -> list[str]:
     return [model.name for model in workspace.every()]
 
@@ -193,7 +209,7 @@ def do_create(name, mode, size, custom_size, base, custom_base, files, pasted, f
 
 # -------------------------------------------------------------------- teach
 def do_teach(name, files, pasted, folder, epochs, batch, rate, auto, target,
-             max_rounds, progress=gr.Progress()):
+             max_rounds, gpus=1, progress=gr.Progress()):
     if not _lock.acquire(blocking=False):
         return "### Busy\n\nA lesson is already running. Wait for it to finish.", gr.update()
     try:
@@ -215,6 +231,7 @@ def do_teach(name, files, pasted, folder, epochs, batch, rate, auto, target,
             summary = lessons.teach_until(
                 model, material, target=target, epochs_per_round=float(epochs),
                 max_rounds=int(max_rounds), batch_size=int(batch), learning_rate=float(rate),
+                gpus=int(gpus or 1),
                 on_round=on_round,
             )
             if not summary["rounds"]:
@@ -230,6 +247,7 @@ def do_teach(name, files, pasted, folder, epochs, batch, rate, auto, target,
             lesson = lessons.teach(
                 model, material, epochs=float(epochs),
                 batch_size=int(batch), learning_rate=float(rate),
+                gpus=int(gpus or 1),
             )
             label, note, _share = lessons.judge(model, lesson["held_out_loss"])
             body = (f"### {model.name}: {label}\n\n_{note}_\n\n"
@@ -485,6 +503,11 @@ def build() -> gr.Blocks:
                             epochs = gr.Number(value=3, label="Epochs (per round)")
                             batch = gr.Number(value=8, precision=0, label="Batch size")
                             rate = gr.Number(value=3e-4, label="Learning rate")
+                        gpus = gr.Slider(
+                            1, max(1, hardware()["gpus"]), value=1, step=1,
+                            label=f"GPUs to use ({hardware_summary()})",
+                            interactive=hardware()["gpus"] > 1,
+                        )
                         teach_button = gr.Button("Teach", variant="primary")
                         teach_out = gr.Markdown()
 
@@ -613,7 +636,8 @@ def build() -> gr.Blocks:
         )
         teach_button.click(
             do_teach,
-            [picker, files, pasted, folder, epochs, batch, rate, auto, target, max_rounds],
+            [picker, files, pasted, folder, epochs, batch, rate, auto, target, max_rounds,
+             gpus],
             [teach_out, card],
         )
 

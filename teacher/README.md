@@ -132,6 +132,8 @@ Add `--json` to any command for one machine-readable object instead of prose.
 | `new`, `teach` | `--web`, `--web-results` | Gather material from the web first, and how many pages to read |
 | `new`, `teach` | `--epochs`, `--batch`, `--rate` | Passes, sequences per step (`auto` to fill the hardware), learning rate |
 | `new`, `teach` | `--until`, `--max-rounds`, `--max-minutes` | Teach in rounds until done, and the limits on that |
+| `new`, `teach` | `--gpus N` | Spread the lesson across N GPUs, or `auto` for all of them |
+| `new`, `teach` | `--device` | `auto`, `cpu` or `cuda` |
 | `new`, `teach` | `--keep N` | How many saved states to keep behind the model (default 2) |
 | `new`, `teach` | `--lora`, `--lora-rank N` | Train a small adapter instead of every weight (pretrained only) |
 | `compare` | `--prompt`, `--tokens`, `--seed`, sampling | What to say, how much, and with which dice |
@@ -285,7 +287,51 @@ anything — a full GPU and a wasted afternoon is still a wasted afternoon:
 
 When it says that, more material is what you need, not a bigger batch.
 
-**What will not help.** Teacher does not spin up DataLoader worker processes,
+### More than one GPU
+
+```bash
+python -m teacher teach bookbot --from ./text --gpus auto
+```
+
+```
+  2 GPUs over nccl: NVIDIA GeForce RTX 4090, NVIDIA GeForce RTX 4090
+  effective batch 16 (8 per GPU across 2)
+```
+
+One process per card, each holding a full copy of the model and training on a
+different slice of every epoch; PyTorch averages the gradients between them at
+each backward pass. The result is *one* model trained on all the data, not two
+models that have to be reconciled. Speedup is close to linear until the
+gradient exchange starts to dominate, which for models this size it does not.
+
+`--gpus` takes a number or `auto`. The default is 1. `--device auto|cpu|cuda`
+picks where to train; `--device cpu` forces the CPU even when a card is
+present, which is occasionally useful for a small model where the transfer
+costs more than the compute.
+
+Two things worth knowing:
+
+**The batch you type is per GPU.** `--batch 8 --gpus 4` takes a gradient step
+over 32 sequences. That is usually what you want — it is why it is faster —
+but it changes the learning dynamics, so the effective number is printed.
+`--batch auto` accounts for it, and counts an epoch's steps per process rather
+than over the whole dataset.
+
+**Windows uses gloo, not NCCL.** NCCL is not built for Windows. Gloo is
+slower, but a slower two-card run still beats using one card, and Teacher
+picks the right one without being asked.
+
+**What will not help.**
+
+*Using the CPU and the GPU together.* Every step ends with a gradient
+exchange, so a step takes as long as the slowest process, and a CPU is one to
+two orders of magnitude behind a GPU at this arithmetic — adding one makes the
+GPUs wait. Splitting a model's layers across both is worse still, since
+activations would cross the bus twice per step. Mixing the two is a way to
+*fit* a model that does not fit, never a way to go faster, which is why it is
+not offered.
+
+Teacher also does not spin up DataLoader worker processes,
 because the dataset is one tensor in memory and a batch is a slice of it —
 workers would add process spawn and IPC cost to a memcpy. Raise `num_workers`
 only for a dataset that reads from disk.

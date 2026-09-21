@@ -38,3 +38,8 @@ def sample_corpus() -> str:
     return " ".join(
         f"{s} {v} {o} ." for _ in range(30) for s in subjects for v in verbs for o in objects
     )
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "slow: spawns processes or trains for real; deselect with -m 'not slow'")

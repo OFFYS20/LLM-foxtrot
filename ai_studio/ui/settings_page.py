@@ -17,7 +17,7 @@ OPTIONAL_PACKAGES = [
     ("transformers", "Hugging Face models"),
     ("tokenizers", "Tokenizer training"),
     ("datasets", "Official benchmark splits, HF datasets"),
-    ("accelerate", "Multi-device training helpers"),
+    ("accelerate", "Hugging Face loading helpers"),
     ("peft", "LoRA / QLoRA"),
     ("bitsandbytes", "8-bit / 4-bit quantization (CUDA only)"),
     ("safetensors", "Safe weight serialisation"),

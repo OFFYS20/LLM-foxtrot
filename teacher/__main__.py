@@ -191,6 +191,8 @@ def run_lesson(model, material, args) -> int:
         keep_checkpoints=getattr(args, "keep", 2),
         lora=getattr(args, "lora", False),
         lora_rank=getattr(args, "lora_rank", 16),
+        gpus=getattr(args, "gpus", 1),
+        device=getattr(args, "device", "auto"),
         on_log=on_log,
     )
 
@@ -236,6 +238,8 @@ def run_until(model, material, args) -> int:
         keep_checkpoints=getattr(args, "keep", 2),
         lora=getattr(args, "lora", False),
         lora_rank=getattr(args, "lora_rank", 16),
+        gpus=getattr(args, "gpus", 1),
+        device=getattr(args, "device", "auto"),
         on_round=on_round,
     )
 
@@ -466,6 +470,11 @@ THE COMMANDS
       without a search; add --list to see what a search found without
       downloading anything; add -o DIR to choose where it goes.
       Then teach from it with --from FOLDER.
+
+      Add --gpus auto to use every GPU in the machine: one process per card,
+      gradients averaged every step. The batch is per GPU, so the real step is
+      batch x gpus. --device auto|cpu|cuda picks where to train. Do not
+      suggest using the CPU and the GPU together; it is slower, not faster.
 
       Add --batch auto to fill the hardware: it picks the largest batch that
       fits in memory and still leaves enough optimizer steps to learn from.
@@ -783,6 +792,12 @@ def build_parser() -> argparse.ArgumentParser:
                          help="most rounds an --until run may take (default 20)")
         sub.add_argument("--max-minutes", dest="max_minutes", type=float, default=0.0,
                          help="stop an --until run after this long (default: no limit)")
+        sub.add_argument("--gpus", default="1", metavar="N",
+                         help="how many GPUs to spread the lesson across: a number, or "
+                              "'auto' for all of them (default 1). Each one runs a full "
+                              "copy and the gradients are averaged every step")
+        sub.add_argument("--device", default="auto", choices=("auto", "cpu", "cuda"),
+                         help="where to train (default auto: the GPU if there is one)")
         sub.add_argument("--lora", action="store_true",
                          help="train a small adapter instead of every weight — far less "
                               "memory, so a bigger base fits. Only for pretrained models; "

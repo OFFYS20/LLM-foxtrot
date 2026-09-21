@@ -286,6 +286,8 @@ def teach(
     keep_checkpoints: int = 2,
     lora: bool = False,
     lora_rank: int = 16,
+    gpus: str | int = 1,
+    device: str = "auto",
     record: bool = True,
     on_log=None,
 ) -> dict:
@@ -353,6 +355,9 @@ def teach(
     automatic = str(batch_size).strip().lower() == "auto"
     settings = configure(1 if automatic else int(batch_size))
 
+    chosen_device, world_size = _choose_hardware(device, gpus, on_log=on_log)
+    settings.num_threads = 0 if chosen_device == "cuda" else settings.num_threads
+
     total_parameters = network.num_parameters()
     lora_stats = _attach_lora(model, network, settings, lora_rank) if lora else None
     if lora_stats:
@@ -364,10 +369,19 @@ def teach(
         **shape,
     )
     if automatic:
-        chosen, why = fit_batch_size(settings, samples=len(train_set), **estimate)
+        # With more than one process each sees its own slice, so the steps an
+        # epoch has are counted per process, not over the whole dataset.
+        chosen, why = fit_batch_size(
+            settings, samples=len(train_set) // world_size, **estimate)
         settings = configure(chosen)
         if on_log:
             on_log(f"[PREP] batch {chosen} is the largest that fits — {why}")
+
+    if world_size > 1 and on_log:
+        # Worth saying out loud: the gradient step is over every process's
+        # batch at once, which is not the number that was typed.
+        on_log(f"[PREP] effective batch {settings.batch_size * world_size} "
+               f"({settings.batch_size} per GPU across {world_size})")
     settings.validate()
 
     check = preflight(settings, **estimate)
@@ -378,35 +392,50 @@ def teach(
             + ("\n\nTry:\n  " + "\n  ".join(check.suggestions) if check.suggestions else "")
         )
 
-    trainer = Trainer(
-        model=network,
-        train_dataset=train_set,
-        eval_dataset=eval_set,
-        config=settings,
-        device="cuda" if torch.cuda.is_available() else "cpu",
-        on_log=on_log,
-    )
-
     started = time.time()
-    result = trainer.train()
-    if result.status == "failed":
-        raise TeacherError(f"The lesson failed: {result.error}")
 
-    # An adapter on its own would leave the folder unable to load, and would
-    # quietly break rollback, branch, pack and Bench. Fold it in instead: what
-    # LoRA buys here is a cheaper lesson, not a different kind of model.
-    if lora_stats:
-        try:
-            network = network.merge_and_unload()
-        except Exception as exc:  # noqa: BLE001
-            raise TeacherError(
-                f"The lesson ran, but its adapter could not be merged back in: {exc}\n"
-                f"The weights on disk are unchanged."
-            ) from exc
+    if world_size > 1:
+        # The workers load the model themselves and rank 0 writes it back, so
+        # the state has to be put aside before they start rather than after.
+        _snapshot_previous(model, keep_checkpoints)
+        result = _teach_across_gpus(
+            model, settings, train_ids, eval_ids, block,
+            world_size=world_size,
+            lora={"rank": lora_rank} if lora else None,
+            on_log=on_log,
+        )
+        if result.status == "failed":
+            raise TeacherError(f"The lesson failed: {result.error}")
+        lora_stats = result.lora or lora_stats
+    else:
+        trainer = Trainer(
+            model=network,
+            train_dataset=train_set,
+            eval_dataset=eval_set,
+            config=settings,
+            device=chosen_device,
+            on_log=on_log,
+        )
+        result = trainer.train()
+        if result.status == "failed":
+            raise TeacherError(f"The lesson failed: {result.error}")
 
-    # Keep the previous state until the new one is safely written.
-    _snapshot_previous(model, keep_checkpoints)
-    network.save_pretrained(str(model.path))
+        # An adapter on its own would leave the folder unable to load, and
+        # would quietly break rollback, branch, pack and Bench. Fold it in
+        # instead: what LoRA buys here is a cheaper lesson, not a different
+        # kind of model.
+        if lora_stats:
+            try:
+                network = network.merge_and_unload()
+            except Exception as exc:  # noqa: BLE001
+                raise TeacherError(
+                    f"The lesson ran, but its adapter could not be merged back in: {exc}\n"
+                    f"The weights on disk are unchanged."
+                ) from exc
+
+        # Keep the previous state until the new one is safely written.
+        _snapshot_previous(model, keep_checkpoints)
+        network.save_pretrained(str(model.path))
 
     lesson = {
         "at": started,
@@ -419,7 +448,8 @@ def teach(
         "held_out_loss": result.best_val_loss,
         "perplexity": perplexity(result.best_val_loss or result.final_train_loss),
         "seconds": round(result.duration_seconds, 1),
-        "device": check.device,
+        "device": f"{check.device} x{world_size}" if world_size > 1 else check.device,
+        "gpus": world_size,
         "status": result.status,
     }
     if lora_stats:
@@ -433,6 +463,85 @@ def teach(
     if record:
         model.record(lesson)
     return lesson
+
+
+class _Outcome:
+    """What came back from the worker processes, shaped like a TrainingResult."""
+
+    def __init__(self, payload: dict) -> None:
+        self.status = payload.get("status", "completed")
+        self.steps = payload.get("steps", 0)
+        self.final_train_loss = payload.get("final_train_loss")
+        self.best_val_loss = payload.get("best_val_loss")
+        self.duration_seconds = payload.get("duration_seconds", 0.0)
+        self.error = payload.get("error")
+        self.lora = payload.get("lora") or None
+
+
+def _choose_hardware(device: str, gpus: str | int, *, on_log=None) -> tuple[str, int]:
+    """Which device to train on, and across how many processes."""
+    from ai_studio.core.errors import StudioError
+    from ai_studio.training import distributed
+
+    wanted = str(device).strip().lower()
+    if wanted not in ("auto", "cpu", "cuda", "gpu"):
+        raise TeacherError(f"Unknown device {device!r}. Use auto, cpu or cuda.")
+
+    if wanted == "cpu":
+        chosen = "cpu"
+    elif wanted in ("cuda", "gpu"):
+        if not torch.cuda.is_available():
+            raise TeacherError(
+                "--device cuda was asked for, but no CUDA GPU is visible here.\n"
+                "  Check that a GPU driver and a CUDA build of PyTorch are installed, "
+                "or drop the flag to use the CPU."
+            )
+        chosen = "cuda"
+    else:
+        chosen = "cuda" if torch.cuda.is_available() else "cpu"
+
+    try:
+        world_size = distributed.resolve_world_size(gpus)
+    except StudioError as exc:
+        raise TeacherError(exc.display()) from exc
+
+    if chosen == "cpu" and world_size > 1:
+        # Spreading a CPU run over processes fights for the same cores and adds
+        # a gradient exchange to every step. It is slower, not faster.
+        if on_log:
+            on_log("[PREP] no GPU to spread across — training on the CPU in one process")
+        world_size = 1
+    if world_size > 1 and on_log:
+        names = distributed.describe()["names"]
+        on_log(f"[PREP] {world_size} GPUs over {distributed.backend('cuda')}: "
+               f"{', '.join(names[:world_size])}")
+    return chosen, world_size
+
+
+def _teach_across_gpus(model, settings, train_ids, eval_ids, block, *,
+                       world_size: int, lora: dict | None, on_log=None) -> _Outcome:
+    """One lesson, one process per GPU, gradients averaged at every step."""
+    import tempfile
+
+    from ai_studio.core.errors import StudioError
+    from ai_studio.training import distributed
+
+    with tempfile.TemporaryDirectory(prefix="teacher-ddp-") as scratch:
+        folder = Path(scratch)
+        job = distributed.Job(
+            model_dir=str(model.path),
+            train_tokens=distributed.tokens_to_file(train_ids, folder, "train"),
+            eval_tokens=(distributed.tokens_to_file(eval_ids, folder, "eval")
+                         if len(eval_ids) >= block else None),
+            block_size=block,
+            settings=settings.to_dict(),
+            world_size=world_size,
+            lora=lora,
+        )
+        try:
+            return _Outcome(distributed.launch(job, on_log=on_log))
+        except StudioError as exc:
+            raise TeacherError(exc.display()) from exc
 
 
 def _attach_lora(model: Model, network, settings, rank: int) -> dict:
