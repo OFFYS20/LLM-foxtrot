@@ -106,6 +106,7 @@ of your data.
 | `pack NAME -o DIR` | Copies `model.safetensors`, `config.json` and `tokenizer.json` |
 | `compare A B ...` | The same prompt through two or more models, side by side |
 | `test NAME SUITE` | Runs a real benchmark suite and says what the score means |
+| `export NAME` | Converts to GGUF for llama.cpp, Ollama or LM Studio |
 | `checkpoints NAME` | The saved states this model can go back to or branch from |
 | `branch NAME NEW` | Copies a model, or one of its saved states, into a new model |
 | `rollback NAME` | Undoes the last lesson, restoring the weights saved before it |
@@ -130,6 +131,7 @@ Add `--json` to any command for one machine-readable object instead of prose.
 | `new` | `--no-teach` | Build it but do not train yet |
 | `new` | `--trust-remote-code` | Let a base model run its own code — only for repos you trust |
 | `new`, `teach` | `--from`, `--text`, `--raw` | Where the material comes from; `--raw` skips cleaning |
+| `new`, `teach` | `--answers PATH` | Question-and-answer pairs, to teach it to reply rather than continue |
 | `new`, `teach` | `--web`, `--web-results` | Gather material from the web first, and how many pages to read |
 | `new`, `teach` | `--epochs`, `--batch`, `--rate` | Passes, sequences per step (`auto` to fill the hardware), learning rate |
 | `new`, `teach` | `--until`, `--max-rounds`, `--max-minutes` | Teach in rounds until done, and the limits on that |
@@ -144,6 +146,7 @@ Add `--json` to any command for one machine-readable object instead of prose.
 | `ask` | `--tokens`, `--temperature`, `--top-p`, `--top-k` | How much to generate and how adventurously |
 | `ask` | `--seed` | Repeat an exact answer |
 | `web` | `--results`, `--url`, `--list`, `-o` | How many pages, extra addresses, look without downloading, where to keep them |
+| `export` | `-o`, `--precision`, `--converter` | Where to write it, how much of each weight to keep, and where llama.cpp is |
 | `pack` | `-o`, `--out` | Where to copy the files |
 | `forget` | `--yes` | Confirm the deletion |
 | `ui` | `--port`, `--host`, `--share`, `--no-browser` | Where the window listens and whether it opens itself |
@@ -622,6 +625,98 @@ LoRA lowers the optimizer and gradient cost, not the activation cost. A long
 sequence or a big batch still needs the memory it always did, which is what
 the preflight check is for — and it now accounts for depth, vocabulary and MLP
 width rather than guessing from a parameter count.
+
+### Teaching it to answer, not just continue
+
+A model trained on plain text learns to *continue* it. Give it half a sentence
+and you get the other half. That is what a language model is, and it is not
+what most people mean when they ask a question.
+
+Instruction tuning is the difference. Give it pairs — a question and its
+answer — and it learns the **answer only**:
+
+```bash
+python -m teacher teach bookbot --answers ./pairs.jsonl --epochs 12
+```
+
+```
+320 pair(s), 30,240 characters, qa style
+on held-out:   0.1623  (perplexity 1.2)
+```
+
+```
+$ python -m teacher ask bookbot "What is the capital of France?"
+The capital of France is Paris.
+```
+
+That is a real 2M model, built from scratch on this machine. Before the
+pairs it could only continue text.
+
+**The file.** Any of these shapes, as `.jsonl`, `.json` or `.csv`, and folders
+are walked:
+
+```json
+{"question": "...", "answer": "..."}
+{"instruction": "...", "input": "...", "output": "..."}
+{"messages": [{"role": "user", ...}, {"role": "assistant", ...}]}
+```
+
+`prompt`/`response` and `q`/`a` are understood too. A row with only half a
+pair is not a pair, and is skipped.
+
+**Why only the answer.** The loss is masked over the question, so the model is
+never rewarded for reproducing what you asked — only for what comes after it.
+That masking is the whole mechanism. Get it wrong by a single token and the
+model never learns which word *starts* an answer, so it emits end-of-sequence
+and returns nothing; it looks exactly like training that failed. (It was wrong
+by a single token. There is a test now.)
+
+**Ask it the way it was taught.** The template used in training is written into
+the model, and `teacher ask` puts your question into that same template. A
+model taught with `### Question:` and then asked something bare answers as if
+continuing a document.
+
+Instruction tuning runs on one GPU for now — `--gpus` is ignored for an answer
+lesson, and says so rather than training the wrong thing quietly.
+
+### Using it somewhere else: GGUF
+
+```bash
+python -m teacher export bookbot --precision f16
+```
+
+```
+/home/you/bookbot-f16.gguf  258.3MB
+
+llama.cpp:  llama-cli -m /home/you/bookbot-f16.gguf -p "your prompt"
+Ollama:     printf 'FROM /home/you/bookbot-f16.gguf\n' > Modelfile && ollama create bookbot -f Modelfile
+LM Studio:  put it in your models folder and pick it from the list
+```
+
+GGUF is what llama.cpp, Ollama and LM Studio read. The conversion is done by
+**llama.cpp's own converter**, because it is the thing that knows how to write
+the format and a second, worse copy of it here would rot.
+
+So you need it:
+
+```bash
+git clone https://github.com/ggerganov/llama.cpp
+pip install -r llama.cpp/requirements.txt
+```
+
+It is looked for beside this repository automatically; `--converter PATH` or
+the `LLAMA_CPP_CONVERT` variable point at it anywhere else. **If it is not
+there, nothing is written and the command says so** — it will not leave a file
+named `.gguf` that llama.cpp cannot open. If the converter itself refuses a
+model, its reason is printed verbatim and nothing is written either.
+
+`--precision` is `f16` (the usual choice), `bf16`, `f32` or `q8_0`. Smaller
+than that is a second step through llama.cpp's own `llama-quantize`, which is
+not run from here.
+
+**Only for models started from a pretrained base.** llama.cpp implements the
+architectures it knows; a model built from scratch here is not one of them, and
+`export` refuses it and points at `teacher pack` and the Bench page instead.
 
 ### Is it any good? Benchmarks
 

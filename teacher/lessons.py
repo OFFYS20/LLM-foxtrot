@@ -288,11 +288,17 @@ def teach(
     lora_rank: int = 16,
     gpus: str | int = 1,
     device: str = "auto",
+    answers: list[str] | None = None,
     record: bool = True,
     on_log=None,
 ) -> dict:
-    """Run a real training pass over ``material`` and save what it learned."""
-    if material.characters < MIN_CHARACTERS:
+    """Run a real training pass and save what it learned.
+
+    Ordinarily that is over ``material`` — plain text, which teaches the model
+    to continue. With ``answers`` it is over question-and-answer pairs instead,
+    which teaches it to reply.
+    """
+    if not answers and material.characters < MIN_CHARACTERS:
         raise TeacherError(
             f"Only {material.characters:,} characters — too little for a lesson. "
             f"Give it at least {MIN_CHARACTERS:,}."
@@ -304,22 +310,47 @@ def teach(
     # so one training block does not demand more material than there is.
     block = min(context_length(model, network), 512)
 
-    # verbose=False silences "Token indices sequence length is longer than the
-    # specified maximum" — true of the corpus, irrelevant here: PackedLMDataset
-    # cuts it into `block`-sized windows and the model never sees it whole.
-    ids = tokenizer(material.text, add_special_tokens=False, verbose=False)["input_ids"]
-    if len(ids) < block * 2:
-        raise TeacherError(
-            f"The material is only {len(ids):,} tokens, and one training block is {block}. "
-            f"Add more material, or make a model with a shorter context."
-        )
+    style = None
+    train_ids: list[int] = []
+    eval_ids: list[int] = []
 
-    # Hold out the tail so the reported loss is measured on text never trained on.
-    split = max(block, int(len(ids) * 0.05))
-    train_ids, eval_ids = ids[:-split], ids[-split:]
+    if answers:
+        # Pairs, not prose: the loss is taken on the answer only, which is what
+        # turns a text continuer into something that replies.
+        from teacher import answers as pairs
 
-    train_set = PackedLMDataset(train_ids, block)
-    eval_set = PackedLMDataset(eval_ids, block) if len(eval_ids) >= block else None
+        records, style, ignored = pairs.read_pairs(list(answers))
+        if on_log:
+            on_log(f"[PREP] {pairs.summarise(records, style)}")
+            for path, why in ignored[:3]:
+                on_log(f"[WARN] skipped {path} — {why}")
+        if len(records) < 8:
+            raise TeacherError(
+                f"Only {len(records)} pair(s) — too few to learn a habit of answering. "
+                f"A few hundred is a sensible start."
+            )
+
+        held = max(1, int(len(records) * 0.05))
+        train_set = pairs.build_dataset(records[:-held], tokenizer, style=style, max_length=block)
+        eval_set = pairs.build_dataset(records[-held:], tokenizer, style=style, max_length=block)
+    else:
+        # verbose=False silences "Token indices sequence length is longer than
+        # the specified maximum" — true of the corpus, irrelevant here:
+        # PackedLMDataset cuts it into `block`-sized windows and the model never
+        # sees it whole.
+        ids = tokenizer(material.text, add_special_tokens=False, verbose=False)["input_ids"]
+        if len(ids) < block * 2:
+            raise TeacherError(
+                f"The material is only {len(ids):,} tokens, and one training block is "
+                f"{block}. Add more material, or make a model with a shorter context."
+            )
+
+        # Hold out the tail so the reported loss is on text never trained on.
+        split = max(block, int(len(ids) * 0.05))
+        train_ids, eval_ids = ids[:-split], ids[-split:]
+
+        train_set = PackedLMDataset(train_ids, block)
+        eval_set = PackedLMDataset(eval_ids, block) if len(eval_ids) >= block else None
 
     arch = model.architecture()
     # Depth, vocabulary and MLP width decide the memory a step needs, and none
@@ -394,6 +425,13 @@ def teach(
 
     started = time.time()
 
+    if world_size > 1 and style:
+        # The worker processes rebuild their datasets from a file of token ids,
+        # which pairs are not. Rather than train the wrong thing quietly, say so.
+        if on_log:
+            on_log("[WARN] answer lessons run on one GPU for now; ignoring --gpus")
+        world_size = 1
+
     if world_size > 1:
         # The workers load the model themselves and rank 0 writes it back, so
         # the state has to be put aside before they start rather than after.
@@ -437,11 +475,19 @@ def teach(
         _snapshot_previous(model, keep_checkpoints)
         network.save_pretrained(str(model.path))
 
+    if style:
+        # Read back when the model is asked something, so the prompt matches
+        # the template it was taught with.
+        model.note(answer_style=style)
+
     lesson = {
         "at": started,
-        "sources": material.sources,
+        "style": style or "text",
+        "sources": list(answers) if answers else material.sources,
         "characters": material.characters,
-        "tokens": len(train_ids),
+        "pairs": len(train_set) if style else None,
+        "tokens": len(train_ids) if not style else sum(
+            len(sequence) for sequence in train_set.sequences),
         "epochs": float(epochs),
         "steps": result.steps,
         "final_loss": result.final_train_loss,
@@ -705,6 +751,12 @@ def talk(model: Model, prompt: str, *, max_new_tokens: int = 120, temperature: f
     """Generate a continuation, mirroring what the Bench page does in the browser."""
     tokenizer = load_tokenizer(model)
     network = load_network(model).eval()
+
+    from teacher import answers as pairs
+
+    # A model taught with "### Question:" and then asked something bare answers
+    # as if continuing a document, which looks like the training failed.
+    prompt = pairs.opener(model, prompt)
 
     ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
     bos = tokenizer.bos_token_id

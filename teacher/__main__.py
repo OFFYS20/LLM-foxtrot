@@ -88,6 +88,9 @@ def collect(args) -> "gather":
         if len(material.skipped) > 5:
             say(style(f"    …and {len(material.skipped) - 5} more", DIM))
     if not material.characters:
+        if getattr(args, "answers", None):
+            # The pairs are the material for this lesson; --from is optional.
+            return material
         raise TeacherError("Nothing readable was found. Point --from at a file or folder of text.")
     say(f"  material: {material.summary()}")
     return material
@@ -164,7 +167,7 @@ def cmd_new(args) -> int:
 
 def cmd_teach(args) -> int:
     model = workspace.get(args.name)
-    say(f"{style('Reading material', BOLD)}")
+    say(f"{style('Reading answers' if args.answers else 'Reading material', BOLD)}")
     material = collect(args)
     say(f"\n{style('Teaching ' + model.name, BOLD)}")
     return run_lesson(model, material, args)
@@ -193,6 +196,7 @@ def run_lesson(model, material, args) -> int:
         lora_rank=getattr(args, "lora_rank", 16),
         gpus=getattr(args, "gpus", 1),
         device=getattr(args, "device", "auto"),
+        answers=getattr(args, "answers", None),
         on_log=on_log,
     )
 
@@ -240,6 +244,7 @@ def run_until(model, material, args) -> int:
         lora_rank=getattr(args, "lora_rank", 16),
         gpus=getattr(args, "gpus", 1),
         device=getattr(args, "device", "auto"),
+        answers=getattr(args, "answers", None),
         on_round=on_round,
     )
 
@@ -454,6 +459,19 @@ THE COMMANDS
       The same prompt through two or more models at the same seed. Returns each
       one's reply, stage and held-out loss, and whether those losses can be
       compared at all — they cannot across different vocabularies.
+
+  {python} -m teacher --json teach NAME --answers PATH --epochs 12
+      Teach it to answer rather than continue, from question-and-answer pairs:
+      .jsonl, .json or .csv with question/answer, instruction/output or
+      messages. The loss is taken on the answer only. Afterwards `ask` wraps
+      my question in the template it was taught with, so do not add a prefix
+      of your own.
+
+  {python} -m teacher --json export NAME --precision f16
+      Convert to GGUF for llama.cpp, Ollama or LM Studio. Needs llama.cpp's
+      converter cloned; if it is missing, or it refuses the model, nothing is
+      written and the error says why — tell me that rather than calling it
+      exported. Only works for models started from a pretrained base.
 
   {python} -m teacher --json test NAME arc --items 20
       Run a real benchmark suite. Returns accuracy, chance, beats_chance,
@@ -779,6 +797,30 @@ def cmd_branch(args) -> int:
                 branched_at=from_what, path=str(made.path))
 
 
+def cmd_export(args) -> int:
+    """Convert a model to GGUF, for llama.cpp, Ollama and LM Studio."""
+    from teacher import export
+
+    model = workspace.get(args.name)
+    destination = Path(args.out).expanduser() if args.out else (
+        Path.cwd() / f"{model.name}-{args.precision}.gguf")
+
+    say(f"{style('Converting ' + model.name + ' to GGUF', BOLD)}")
+    say(style(f"  {args.precision} — {export.TYPES[args.precision]}", DIM))
+    say(style("  llama.cpp's own converter does this; it takes a few minutes", DIM))
+
+    written = export.to_gguf(
+        model, destination, precision=args.precision, converter=args.converter,
+        on_log=lambda message, level="info": say(style("  " + message, DIM)),
+    )
+
+    say(f"\n  {written['path']}  {fmt_bytes(written['bytes'])}")
+    say("")
+    for line in export.advice(written):
+        say(style("  " + line, DIM))
+    return emit(command="export", **written)
+
+
 def cmd_rollback(args) -> int:
     model = workspace.get(args.name)
     saved = model.earlier_states()
@@ -825,6 +867,10 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("--text", help="text to learn from, given directly")
         sub.add_argument("--raw", action="store_true",
                          help="skip cleaning and use the text exactly as found")
+        sub.add_argument("--answers", action="append", metavar="PATH",
+                         help="question-and-answer pairs to learn to reply from, instead "
+                              "of plain text: .jsonl, .json or .csv with instruction/"
+                              "output, question/answer, or messages columns (repeatable)")
         sub.add_argument("--web", metavar="QUERY", default="",
                          help="also search the web for this and learn from what it finds; "
                               "the pages are kept as text files, not thrown away")
@@ -979,6 +1025,18 @@ def build_parser() -> argparse.ArgumentParser:
                         help="branch from this saved state instead of the current weights "
                              "(see: teacher checkpoints NAME)")
     branch.set_defaults(func=cmd_branch)
+
+    export = subs.add_parser(
+        "export", help="convert a model to GGUF for llama.cpp, Ollama or LM Studio")
+    export.add_argument("name")
+    export.add_argument("-o", "--out", metavar="FILE",
+                        help="where to write it (default: NAME-PRECISION.gguf here)")
+    export.add_argument("--precision", default="f16",
+                        choices=("f32", "f16", "bf16", "q8_0"),
+                        help="how much of each weight to keep (default f16)")
+    export.add_argument("--converter", metavar="PATH",
+                        help="llama.cpp's convert_hf_to_gguf.py, if it is somewhere unusual")
+    export.set_defaults(func=cmd_export)
 
     rollback = subs.add_parser(
         "rollback", help="undo the last lesson, restoring the weights saved before it")

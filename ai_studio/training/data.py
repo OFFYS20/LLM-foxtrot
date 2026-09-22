@@ -171,7 +171,16 @@ def build_torch_dataset(
 
 
 def _prompt_length(record: dict[str, Any], mode: str, tokenizer: Any, system_prompt: str) -> int:
-    """Token count of the prompt portion, so loss is only taken on the response."""
+    """Token count of the prompt portion, so loss is only taken on the response.
+
+    Measured as the common prefix of the whole example and the prompt alone,
+    not as the length of the prompt alone. Those differ: a tokenizer with an
+    end-of-sequence post-processor appends one when it encodes the prompt by
+    itself, and counting that would mask the *first token of the answer*. A
+    model that never learns which token starts an answer does not start one —
+    it emits end-of-sequence and returns nothing, which looks like training
+    that failed rather than masking that is off by one.
+    """
     try:
         if mode == "instruction":
             prompt = f"### Instruction:\n{record.get('instruction', '')}\n"
@@ -195,7 +204,19 @@ def _prompt_length(record: dict[str, Any], mode: str, tokenizer: Any, system_pro
             prompt = "\n".join(lines)
         else:
             return 0
-        return len(tokenizer(prompt, add_special_tokens=True)["input_ids"])
+
+        whole = tokenizer(
+            record_to_text(record, mode, system_prompt=system_prompt),
+            add_special_tokens=True,
+        )["input_ids"]
+        head = tokenizer(prompt, add_special_tokens=True)["input_ids"]
+
+        shared = 0
+        for mine, theirs in zip(whole, head):
+            if mine != theirs:
+                break
+            shared += 1
+        return shared
     except Exception:  # noqa: BLE001 - masking is an optimisation, never fatal
         return 0
 

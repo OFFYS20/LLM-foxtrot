@@ -126,3 +126,67 @@ def test_record_to_text_formats_each_mode():
     assert "### Instruction:" in instruction and "### Response:" in instruction
     chat = record_to_text({"messages": [{"role": "user", "content": "hi"}]}, "chat")
     assert "<|user|>" in chat
+
+
+# ------------------------------------------------- masking the prompt, exactly
+class _Toy:
+    """A tokenizer that wraps every encoding in <s> … </s>, as a real one does."""
+
+    bos_token_id, eos_token_id, pad_token_id = 1, 2, 0
+
+    def __call__(self, text, add_special_tokens=False, **_):
+        body = [10 + (ord(ch) % 50) for ch in text]
+        return {"input_ids": ([1] + body + [2]) if add_special_tokens else body}
+
+
+def test_the_prompt_mask_does_not_swallow_the_first_token_of_the_answer():
+    """The bug this guards against is silent and total: mask one token too many
+    and the model never learns which token *starts* an answer, so it emits
+    end-of-sequence instead and returns nothing at all."""
+    from ai_studio.data.dataset_builder import record_to_text
+    from ai_studio.training.data import _prompt_length
+
+    record = {"question": "Where is Paris?", "answer": "Paris is in France."}
+    tokenizer = _Toy()
+
+    whole = tokenizer(record_to_text(record, "qa"), add_special_tokens=True)["input_ids"]
+    masked = _prompt_length(record, "qa", tokenizer, "")
+
+    assert masked < len(whole), "the whole example must not be masked"
+    prompt_text = "### Question:\nWhere is Paris?\n\n### Answer:\n"
+    expected = 1 + len(tokenizer(prompt_text)["input_ids"])   # BOS + the prompt
+    assert masked == expected, (
+        f"masked {masked} positions where the prompt occupies {expected}; "
+        f"the difference is answer tokens the model never learns"
+    )
+
+
+def test_the_answer_is_what_is_left_unmasked():
+    from ai_studio.data.dataset_builder import record_to_text
+    from ai_studio.training.data import IGNORE_INDEX, SequenceDataset, _prompt_length
+
+    record = {"question": "Where is Paris?", "answer": "Paris is in France."}
+    tokenizer = _Toy()
+    ids = tokenizer(record_to_text(record, "qa"), add_special_tokens=True)["input_ids"]
+    prompt = _prompt_length(record, "qa", tokenizer, "")
+
+    dataset = SequenceDataset([ids], tokenizer.pad_token_id, len(ids), [prompt])
+    labels = dataset[0]["labels"]
+
+    learned = [int(value) for value in labels if int(value) != IGNORE_INDEX]
+    assert learned, "something must be learned from every pair"
+    assert learned == ids[prompt:], "exactly the answer, and all of it"
+
+
+def test_an_instruction_record_masks_its_prompt_too():
+    from ai_studio.training.data import _prompt_length
+
+    record = {"instruction": "Add two numbers.", "input": "2 and 3", "output": "5"}
+    assert _prompt_length(record, "instruction", _Toy(), "") > 0
+
+
+def test_a_plain_text_record_masks_nothing():
+    """Continuing text means learning every token, including the first."""
+    from ai_studio.training.data import _prompt_length
+
+    assert _prompt_length({"text": "hello"}, "raw_lm", _Toy(), "") == 0

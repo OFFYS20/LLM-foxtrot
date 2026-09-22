@@ -213,6 +213,37 @@ It also returns `losses_comparable`. **If that is false, do not say one model
 scored better.** A loss is an average over a model's vocabulary, and two models
 that carve text up differently are not on the same scale. Judge by reading.
 
+### Teaching it to answer
+
+```bash
+python -m teacher --json teach NAME --answers ./pairs.jsonl --epochs 12
+```
+
+Plain text teaches a model to *continue*; pairs teach it to *reply*. The file
+is `.jsonl`, `.json` or `.csv` with `question`/`answer`, `instruction`/`output`
+or `messages` — folders are walked. The loss is taken on the answer only.
+
+After this, `teacher ask` automatically wraps the question in the template it
+was taught with. Do not add your own prefix.
+
+`--gpus` is ignored for an answer lesson and says so.
+
+### Getting the model out: GGUF
+
+```bash
+python -m teacher --json export NAME --precision f16
+```
+
+Converts to GGUF for llama.cpp, Ollama and LM Studio. Needs llama.cpp's
+converter cloned (`git clone https://github.com/ggerganov/llama.cpp` and
+`pip install -r llama.cpp/requirements.txt`); `--converter PATH` or
+`LLAMA_CPP_CONVERT` point at it.
+
+**If it is not installed, or the converter refuses, nothing is written and the
+error says why. Relay that — do not describe the model as exported.** Only
+models started from a pretrained base can be converted; a from-scratch one is
+refused and pointed at `teacher pack` instead.
+
 ### Benchmarks
 
 ```bash
