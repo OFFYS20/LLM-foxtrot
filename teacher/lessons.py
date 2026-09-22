@@ -485,6 +485,12 @@ def teach(
 
         def keep_progress(step, loss, val_loss, is_best):
             worker = held.get("trainer")
+            # The trainer also calls this on the very last step. Saving then
+            # writes the weights and the optimizer to disk moments before the
+            # finished lesson deletes them again — at 500M parameters that is
+            # six gigabytes written for nothing.
+            if held.get("total") and step >= held["total"]:
+                return
             if worker is not None:
                 interrupted.write(
                     model, worker.model, worker.optimizer, worker.scheduler,

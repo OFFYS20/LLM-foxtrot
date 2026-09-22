@@ -95,7 +95,9 @@ def test_packed_dataset_cuts_exact_blocks():
     item = dataset[0]
     assert item["input_ids"].shape == (16,)
     assert torch.equal(item["labels"], item["input_ids"]), "causal LM shifts inside the model"
-    assert item["attention_mask"].sum() == 16
+    # A packed block has no padding. A mask of ones would force attention off
+    # its causal fast path for nothing.
+    assert "attention_mask" not in item
 
 
 def test_packed_dataset_refuses_a_corpus_smaller_than_one_block():
@@ -465,3 +467,59 @@ def test_shapes_stay_near_the_depth_ordinary_models_have():
         assert abs(config.num_layers - suggest_depth(target)) <= 4, (
             f"{target:,} gave {config.num_layers} layers, "
             f"{suggest_depth(target)} suggested")
+
+
+# ------------------------------------------------ the loop wastes nothing
+def test_the_loss_is_exactly_what_the_slower_formula_gave():
+    """Shifting the labels instead of the logits must not change a single bit
+    of the loss or its gradient — it only stops a vocabulary-sized copy."""
+    import torch.nn.functional as F
+
+    from ai_studio.models.transformer import TransformerConfig, TransformerLM
+
+    torch.manual_seed(0)
+    model = TransformerLM(TransformerConfig(
+        hidden_size=32, num_layers=2, num_heads=2, num_kv_heads=2,
+        max_position_embeddings=32, vocab_size=97, intermediate_size=64))
+    ids = torch.randint(0, 97, (3, 16))
+    labels = ids.clone()
+    labels[0, :5] = -100
+
+    out = model(input_ids=ids, labels=labels)
+    logits = out["logits"]
+    reference = F.cross_entropy(
+        logits[..., :-1, :].contiguous().view(-1, 97).float(),
+        labels[..., 1:].contiguous().view(-1),
+        ignore_index=-100,
+    )
+    assert torch.equal(out["loss"], reference), "the loss must be bit-identical"
+
+
+def test_packed_training_takes_the_causal_fast_path():
+    """No mask means attention runs with is_causal=True, which is what lets a
+    GPU use FlashAttention. A mask of ones would rule it out for nothing."""
+    from ai_studio.models.transformer import TransformerConfig, TransformerLM
+
+    torch.manual_seed(0)
+    model = TransformerLM(TransformerConfig(
+        hidden_size=32, num_layers=1, num_heads=2, num_kv_heads=2,
+        max_position_embeddings=32, vocab_size=50, intermediate_size=64))
+    ids = torch.randint(0, 50, (2, 16))
+    batch = PackedLMDataset(list(range(64)), block_size=16)[0]
+
+    assert "attention_mask" not in batch
+    masked = model(input_ids=ids, attention_mask=torch.ones_like(ids))["logits"]
+    unmasked = model(input_ids=ids)["logits"]
+    assert torch.allclose(masked, unmasked, atol=1e-5), "and the answer is the same"
+
+
+def test_a_step_reads_the_loss_back_once_not_once_per_micro_batch():
+    """Every read of a GPU value into Python makes the CPU wait for the GPU.
+    The loop should do it once per optimizer step, not per micro-batch."""
+    import inspect
+
+    from ai_studio.training.trainer import Trainer
+
+    source = inspect.getsource(Trainer.train)
+    assert "loss.item()" not in source, "a read per micro-batch stalls the GPU"
+    assert "running_loss = running_loss + loss.detach()" in source

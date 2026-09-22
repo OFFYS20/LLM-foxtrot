@@ -245,6 +245,15 @@ class Trainer:
             return torch.optim.SGD(groups, lr=self.config.learning_rate, momentum=0.9)
         if name == "adam":
             return torch.optim.Adam(groups, lr=self.config.learning_rate, betas=(0.9, 0.95))
+        if self.device.type == "cuda":
+            # One kernel updates every parameter, where the default loops over
+            # them. Worth having on a GPU and not available everywhere, so it
+            # falls back to the ordinary version rather than failing.
+            try:
+                return torch.optim.AdamW(groups, lr=self.config.learning_rate,
+                                         betas=(0.9, 0.95), eps=1e-8, fused=True)
+            except (RuntimeError, TypeError, ValueError):
+                pass
         return torch.optim.AdamW(groups, lr=self.config.learning_rate, betas=(0.9, 0.95), eps=1e-8)
 
     def build_scheduler(self, optimizer: torch.optim.Optimizer, total_steps: int) -> Any:
@@ -348,7 +357,11 @@ class Trainer:
         step = self.start_step
         epoch = 0.0
         accumulated = 0
-        running_loss = 0.0
+        # Kept on the device. Reading a GPU tensor into Python makes the CPU wait
+        # for the GPU to finish, and doing that every micro-batch stops the CPU
+        # queueing the next step's kernels while the GPU works on this one.
+        running_loss = torch.zeros((), device=self.device)
+        trainable_parameters = [p for p in self.model.parameters() if p.requires_grad]
         last_report = time.time()
         tokens_window = 0
         samples_window = 0
@@ -407,7 +420,7 @@ class Trainer:
                     else:
                         loss.backward()
 
-                    running_loss += loss.item() * self.config.gradient_accumulation_steps
+                    running_loss = running_loss + loss.detach() * self.config.gradient_accumulation_steps
                     tokens_window += int(batch["input_ids"].numel())
                     samples_window += int(batch["input_ids"].shape[0])
                     accumulated += 1
@@ -416,16 +429,12 @@ class Trainer:
                         continue
 
                     # ---- optimizer step -------------------------------------
-                    grad_norm = None
+                    norm_tensor = None
                     if self.config.gradient_clipping and self.config.gradient_clipping > 0:
                         if scaler.is_enabled():
                             scaler.unscale_(self.optimizer)
-                        grad_norm = float(
-                            torch.nn.utils.clip_grad_norm_(
-                                [p for p in self.model.parameters() if p.requires_grad],
-                                self.config.gradient_clipping,
-                            )
-                        )
+                        norm_tensor = torch.nn.utils.clip_grad_norm_(
+                            trainable_parameters, self.config.gradient_clipping)
 
                     if scaler.is_enabled():
                         scaler.step(self.optimizer)
@@ -438,8 +447,17 @@ class Trainer:
                     step += 1
                     accumulated = 0
                     self._tokens_seen += tokens_window
-                    step_loss = running_loss / self.config.gradient_accumulation_steps
-                    running_loss = 0.0
+                    # One transfer for both numbers, once per optimizer step, where
+                    # there used to be one per micro-batch and another for the norm.
+                    if norm_tensor is not None:
+                        summed, norm_value = torch.stack(
+                            [running_loss.float(), norm_tensor.float().to(running_loss.device)]
+                        ).tolist()
+                        grad_norm = float(norm_value)
+                    else:
+                        summed, grad_norm = float(running_loss), None
+                    step_loss = summed / self.config.gradient_accumulation_steps
+                    running_loss = torch.zeros((), device=self.device)
                     epoch = step * self.config.gradient_accumulation_steps / max(1, len(train_loader))
                     final_loss = step_loss
 

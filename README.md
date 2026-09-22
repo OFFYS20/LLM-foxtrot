@@ -10,6 +10,9 @@ runs on your machine; nothing is sent anywhere.
 | **[AI Studio](ai_studio/README.md)** | The full workbench: datasets, tokenizers, LoRA, RAG, benchmarks | When you want every dial |
 | **Foxtrot** | A web platform for teams, with a FastAPI backend and a Next.js front end | Running this as a service |
 
+**Everything in one file:** [DOCUMENTATION.md](DOCUMENTATION.md) combines every
+documentation file in the project, with a single table of contents.
+
 ---
 
 ## Start here

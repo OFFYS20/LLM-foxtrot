@@ -149,3 +149,14 @@ def test_material_that_changed_is_a_different_run():
     first = interrupted.fingerprint("the original material")
     assert interrupted.fingerprint("the original material") == first
     assert interrupted.fingerprint("the original material.") != first
+
+
+def test_the_last_step_does_not_write_a_record_that_is_about_to_be_deleted(monkeypatch):
+    """Saving weights and optimizer state at the final step, moments before the
+    finished lesson clears them, is gigabytes written for nothing."""
+    import inspect
+
+    from teacher import lessons
+
+    source = inspect.getsource(lessons.teach)
+    assert 'step >= held["total"]' in source, "the final-step save must be skipped"

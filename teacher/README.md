@@ -295,6 +295,38 @@ anything — a full GPU and a wasted afternoon is still a wasted afternoon:
 
 When it says that, more material is what you need, not a bigger batch.
 
+### What the training loop no longer wastes
+
+A profile of a training step turned up five things spending time on nothing.
+Each is fixed, and each fix was checked to leave the result unchanged:
+
+| What it was doing | What it cost | Now |
+|---|---|---|
+| **Copying the logits to compute the loss.** Slicing the last position off a batch × sequence × vocabulary tensor and making it contiguous copied the whole thing every step, and the backward pass allocated a zero-filled one to scatter into. | 10% of every step was spent filling vocabulary-sized tensors with zeros | The *labels* are shifted instead. Loss and gradient are bit-identical; the loss and its backward run **1.62× faster** |
+| **An attention mask of all ones.** Packed training data has no padding, yet every block carried a mask saying so. The model built a full sequence × sequence mask from it each step and called attention with `is_causal=False`. | On a GPU, that rules out the FlashAttention kernel entirely | No mask, so attention takes its causal fast path |
+| **Waiting on the GPU every micro-batch.** Reading the loss into Python forces the CPU to wait for the GPU to finish, so it cannot queue the next step's work in the meantime. It did this once per micro-batch, and again for the gradient norm. | Two stalls per step, more with gradient accumulation | The loss stays on the device; one transfer per optimizer step carries both numbers |
+| **Updating parameters one at a time.** | A loop over every weight tensor per step | Fused AdamW on CUDA: one kernel for all of them |
+| **Saving on the very last step.** The crash-recovery record was also written at the end of the lesson — weights and optimizer state — moments before the finished lesson deleted it. | At 500M parameters, about 6 GB written for nothing | Skipped |
+
+**Measured, on a CPU**, a real lesson start to finish (a 10M model, one epoch,
+three runs each): **22.75 s before, 18.77 s after — 1.21× faster**, with the
+held-out loss identical at 7.7886 in both. The numbers came out the same
+because the arithmetic is the same.
+
+**On a GPU it should be more, and that is not measured.** Three of the five
+fixes — FlashAttention, the synchronisation stalls and fused AdamW — only exist
+on a GPU, and this machine has none. The CPU figure is the floor, not the
+estimate.
+
+Two things were looked at and deliberately *not* changed:
+
+* **Reloading the model each round.** An `--until` run reloads the model and
+  re-tokenises the material every round, which looks wasteful. Measured, it is
+  **2% of a round**. Not worth the complexity of keeping state between rounds.
+* **`torch.compile`.** It can be a large win, but it needs Triton on a GPU,
+  and Triton does not support Windows. Turning it on by default would break
+  the platform most people double-click this on.
+
 ### More than one GPU
 
 ```bash

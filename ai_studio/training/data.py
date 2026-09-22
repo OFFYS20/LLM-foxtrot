@@ -48,11 +48,12 @@ class PackedLMDataset(Dataset):
     def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
         start = index * self.block_size
         block = self.data[start : start + self.block_size].contiguous()
-        return {
-            "input_ids": block,
-            "labels": block.clone(),
-            "attention_mask": torch.ones_like(block),
-        }
+        # No attention mask. A packed block has no padding, so a mask of ones
+        # says nothing — and passing one made the model build a full
+        # sequence-by-sequence mask every step and call attention with
+        # is_causal=False, which rules out the FlashAttention kernel on a GPU.
+        # Without it, attention takes the causal fast path.
+        return {"input_ids": block, "labels": block.clone()}
 
 
 class SequenceDataset(Dataset):
