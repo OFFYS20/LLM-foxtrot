@@ -213,6 +213,21 @@ It also returns `losses_comparable`. **If that is false, do not say one model
 scored better.** A loss is an average over a model's vocabulary, and two models
 that carve text up differently are not on the same scale. Judge by reading.
 
+### Trusting the number
+
+`--eval-from PATH` measures the held-out loss against separate text instead of
+the tail of their own corpus. The default flatters a model that memorised;
+this does not. The reply carries `measured_on` — say which it was if they ask
+whether the model really learned.
+
+Repeated passages across sources are dropped automatically and counted;
+`--keep-duplicates` keeps them.
+
+`teacher resume NAME` carries on a lesson that was interrupted. A lesson writes
+itself down about ten times as it runs, so a crash costs minutes. If the
+material changed since, resuming is refused — start the lesson again rather
+than arguing with it. Answer lessons are not resumable.
+
 ### Teaching it to answer
 
 ```bash

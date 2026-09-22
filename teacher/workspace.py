@@ -161,6 +161,19 @@ class Model:
             shutil.copy2(item, self.path / item.name)
         return chosen.name
 
+    def rollback_to_interrupted(self) -> int:
+        """Restore the weights an interrupted lesson last wrote down."""
+        from teacher import interrupted
+
+        folder = interrupted.place(self)
+        plan = interrupted.waiting(self)
+        if plan is None:
+            raise TeacherError(f"{self.name} has no interrupted lesson to resume.")
+        for item in folder.iterdir():
+            if item.is_file() and item.name not in (interrupted.STATE, interrupted.PLAN):
+                shutil.copy2(item, self.path / item.name)
+        return int(plan.get("step", 0))
+
     # -------------------------------------------------------------- copy
     def pack(self, destination: Path) -> list[str]:
         """Copy just the three files Bench needs into ``destination``."""

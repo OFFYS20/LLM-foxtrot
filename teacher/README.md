@@ -107,6 +107,7 @@ of your data.
 | `compare A B ...` | The same prompt through two or more models, side by side |
 | `test NAME SUITE` | Runs a real benchmark suite and says what the score means |
 | `export NAME` | Converts to GGUF for llama.cpp, Ollama or LM Studio |
+| `resume NAME` | Carries on a lesson that was interrupted part-way through |
 | `checkpoints NAME` | The saved states this model can go back to or branch from |
 | `branch NAME NEW` | Copies a model, or one of its saved states, into a new model |
 | `rollback NAME` | Undoes the last lesson, restoring the weights saved before it |
@@ -132,6 +133,8 @@ Add `--json` to any command for one machine-readable object instead of prose.
 | `new` | `--trust-remote-code` | Let a base model run its own code — only for repos you trust |
 | `new`, `teach` | `--from`, `--text`, `--raw` | Where the material comes from; `--raw` skips cleaning |
 | `new`, `teach` | `--answers PATH` | Question-and-answer pairs, to teach it to reply rather than continue |
+| `new`, `teach` | `--eval-from PATH` | Measure the held-out loss on separate text, not the tail of your own |
+| `new`, `teach` | `--keep-duplicates` | Keep passages that appear in more than one source |
 | `new`, `teach` | `--web`, `--web-results` | Gather material from the web first, and how many pages to read |
 | `new`, `teach` | `--epochs`, `--batch`, `--rate` | Passes, sequences per step (`auto` to fill the hardware), learning rate |
 | `new`, `teach` | `--until`, `--max-rounds`, `--max-minutes` | Teach in rounds until done, and the limits on that |
@@ -625,6 +628,65 @@ LoRA lowers the optimizer and gradient cost, not the activation cost. A long
 sequence or a big batch still needs the memory it always did, which is what
 the preflight check is for — and it now accounts for depth, vocabulary and MLP
 width rather than guessing from a parameter count.
+
+### Trusting the number
+
+Three things decide whether the held-out loss means what it looks like it
+means.
+
+**What it is measured on.** By default it is the last 5% of your own text —
+never trained on, but from the same source, in the same voice, often about the
+same thing. A model that memorised your corpus still scores well on it.
+`--eval-from` measures against writing from somewhere else entirely:
+
+```bash
+python -m teacher teach bookbot --from ./my-books --eval-from ./other-books
+```
+
+```
+  measuring against 1 source(s), 35,354 characters of separate text
+  on held-out:   6.6808  (perplexity 796.9)
+```
+
+There is nothing in that file to have memorised, so the number is about
+learning rather than recall. The lesson records which was used, so you can tell
+later which kind of number you are looking at.
+
+**Whether it saw the same thing twice.** The cleaner already drops repeated
+paragraphs inside a document. Across sources it could not — the same book in
+two folders, a chapter that is also on a web page you gathered — and repetition
+teaches a model to recite. Repeats are now dropped, and counted:
+
+```
+  dropped 340 repeated passage(s), 412,908 characters — the same text twice
+  teaches memorising
+```
+
+Only passages of 200 characters or more, because a heading or a refrain repeats
+for honest reasons and dropping it would quietly edit your text.
+`--keep-duplicates` turns it off.
+
+**Whether you get to see it at all.** A lesson now writes itself down about ten
+times as it runs — the weights, the optimizer's momentum, the schedule and the
+step it reached — so a crash costs minutes rather than the whole round:
+
+```bash
+python -m teacher resume bookbot
+```
+
+```
+bookbot — interrupted at step 312/1040 on 2026-09-22 14:56, 40 epoch(s) over 207,173 characters
+  rebuilding the material from 1 source(s)
+  restored the weights saved at step 312
+  the data loader's place in the epoch is not restored, so a few batches may be seen twice
+```
+
+The record is deleted when a lesson finishes, so a record that is there means a
+lesson that is not. The material is fingerprinted when the run starts and
+checked when it resumes — if it changed, resuming would continue onto a
+different text than the run was part-way through, so it refuses and says to
+start again. Answer lessons are not resumable yet, and say so rather than
+appearing to work.
 
 ### Teaching it to answer, not just continue
 

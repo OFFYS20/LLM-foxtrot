@@ -75,12 +75,17 @@ def collect(args) -> "gather":
         # So the "teach it again" advice below names the folder that was gathered
         # rather than "<your text>".
         args.source = sources
-    material = gather(sources, raw_text=args.text or "", clean=not args.raw)
+    material = gather(sources, raw_text=args.text or "", clean=not args.raw,
+                      dedupe=not getattr(args, "keep_duplicates", False))
     if material.partial:
         say(style(f"  read only in part — a row file has a ceiling on how much is read:", DIM))
         for path, dropped in material.partial[:5]:
             say(style(f"    {path} — {dropped:,} row(s) left out", DIM))
         say(style("    split the file into smaller ones to use all of it", DIM))
+    if material.repeats:
+        say(style(f"  dropped {material.repeats:,} repeated passage(s), "
+                  f"{material.repeated_characters:,} characters — the same text twice "
+                  f"teaches memorising", DIM))
     if material.skipped:
         say(style(f"  skipped {len(material.skipped)} item(s):", DIM))
         for path, why in material.skipped[:5]:
@@ -94,6 +99,21 @@ def collect(args) -> "gather":
         raise TeacherError("Nothing readable was found. Point --from at a file or folder of text.")
     say(f"  material: {material.summary()}")
     return material
+
+
+def measured_against(args):
+    """The text --eval-from named, if any."""
+    paths = getattr(args, "eval_from", None)
+    if not paths:
+        return None
+    against = gather(list(paths), clean=not args.raw, dedupe=False)
+    if not against.characters:
+        raise TeacherError(
+            "Nothing readable in what --eval-from pointed at, so there would be "
+            "nothing to measure against."
+        )
+    say(style(f"  measuring against {against.summary()} of separate text", DIM))
+    return against
 
 
 def fetch_material(query: str, results: int, urls: list[str] | None = None,
@@ -197,6 +217,7 @@ def run_lesson(model, material, args) -> int:
         gpus=getattr(args, "gpus", 1),
         device=getattr(args, "device", "auto"),
         answers=getattr(args, "answers", None),
+        against=measured_against(args),
         on_log=on_log,
     )
 
@@ -245,6 +266,7 @@ def run_until(model, material, args) -> int:
         gpus=getattr(args, "gpus", 1),
         device=getattr(args, "device", "auto"),
         answers=getattr(args, "answers", None),
+        against=measured_against(args),
         on_round=on_round,
     )
 
@@ -459,6 +481,16 @@ THE COMMANDS
       The same prompt through two or more models at the same seed. Returns each
       one's reply, stage and held-out loss, and whether those losses can be
       compared at all — they cannot across different vocabularies.
+
+  {python} -m teacher --json teach NAME --from PATH --eval-from OTHER
+      Measure the held-out loss against separate text rather than the tail of
+      the same corpus. The default flatters a model that memorised; this does
+      not. The reply says which was used, in "measured_on".
+
+  {python} -m teacher --json resume NAME
+      Carry on a lesson that was interrupted. A lesson writes itself down as it
+      goes, so a crash costs minutes. If the material changed since, this is
+      refused — start the lesson again rather than forcing it.
 
   {python} -m teacher --json teach NAME --answers PATH --epochs 12
       Teach it to answer rather than continue, from question-and-answer pairs:
@@ -797,6 +829,79 @@ def cmd_branch(args) -> int:
                 branched_at=from_what, path=str(made.path))
 
 
+def cmd_resume(args) -> int:
+    """Pick up a lesson that was interrupted part-way through."""
+    from teacher import interrupted
+
+    model = workspace.get(args.name)
+    plan = interrupted.waiting(model)
+    if not plan:
+        say(f"{model.name} has no interrupted lesson — nothing to resume.")
+        say(style("  A lesson that finished leaves nothing behind. This is the good case.",
+                  DIM))
+        return emit(command="resume", model=model.name, resumed=False,
+                    reason="no interrupted lesson")
+
+    say(f"{style(model.name + ' — ' + interrupted.describe(plan), BOLD)}")
+
+    sources = list(plan.get("sources") or [])
+    if not sources:
+        raise TeacherError(
+            "The interrupted lesson did not record where its material came from, "
+            "so it cannot be rebuilt. Teach it again from the start."
+        )
+
+    if plan.get("style"):
+        raise TeacherError(
+            "Answer lessons are not resumable yet — they are short enough that "
+            f"starting again costs little: teacher teach {model.name} "
+            f"--answers {' --answers '.join(sources)}"
+        )
+
+    say(style(f"  rebuilding the material from {len(sources)} source(s)", DIM))
+    material = gather(sources, dedupe=True)
+    if interrupted.fingerprint(material.text) != plan.get("fingerprint"):
+        raise TeacherError(
+            "The material has changed since that lesson started, so resuming would "
+            "train on a different text than the one it was part-way through.\n"
+            f"  Start it again:  teacher teach {model.name} "
+            f"--from {' --from '.join(sources)}"
+        )
+
+    # The weights as they were at the last save, not as they were before the run.
+    restored = model.rollback_to_interrupted()
+    say(style(f"  restored the weights saved at step {restored}", DIM))
+    say(style("  the data loader's place in the epoch is not restored, so a few "
+              "batches may be seen twice", DIM))
+
+    last = {"line": ""}
+
+    def on_log(message: str, level: str = "info") -> None:
+        if "[TRAIN]" in message or "[PREP" in message or "[WARN" in message:
+            text = message.split("] ", 1)[-1]
+            if text != last["line"]:
+                say(style("  " + text, DIM))
+                last["line"] = text
+
+    say(f"\n{style('Carrying on', BOLD)}")
+    lesson = lessons.teach(
+        model, material,
+        epochs=float(plan.get("epochs", 3.0)),
+        batch_size=int(plan.get("batch_size", 8)),
+        learning_rate=float(plan.get("learning_rate", 3e-4)),
+        lora=bool(plan.get("lora")),
+        lora_rank=int(plan.get("lora_rank", 16)),
+        resume_from=int(plan.get("step", 0)),
+        on_log=on_log,
+    )
+    label, note, share = lessons.judge(model, lesson["held_out_loss"])
+    say(f"\n  {style(model.name + ': ' + label, BOLD)}")
+    say(style(f"  {note}", DIM))
+    return emit(command="resume", model=model.name, resumed=True,
+                from_step=int(plan.get("step", 0)), stage=label,
+                held_out_loss=lesson["held_out_loss"])
+
+
 def cmd_export(args) -> int:
     """Convert a model to GGUF, for llama.cpp, Ollama and LM Studio."""
     from teacher import export
@@ -867,6 +972,13 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("--text", help="text to learn from, given directly")
         sub.add_argument("--raw", action="store_true",
                          help="skip cleaning and use the text exactly as found")
+        sub.add_argument("--eval-from", dest="eval_from", action="append", metavar="PATH",
+                         help="measure the held-out loss against this text instead of the "
+                              "tail of your own — the honest way to tell learning from "
+                              "memorising (repeatable)")
+        sub.add_argument("--keep-duplicates", dest="keep_duplicates", action="store_true",
+                         help="keep passages that appear in more than one source, and learn "
+                              "them as many times as they appear")
         sub.add_argument("--answers", action="append", metavar="PATH",
                          help="question-and-answer pairs to learn to reply from, instead "
                               "of plain text: .jsonl, .json or .csv with instruction/"
@@ -1025,6 +1137,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="branch from this saved state instead of the current weights "
                              "(see: teacher checkpoints NAME)")
     branch.set_defaults(func=cmd_branch)
+
+    resume = subs.add_parser(
+        "resume", help="carry on a lesson that was interrupted part-way through")
+    resume.add_argument("name")
+    resume.set_defaults(func=cmd_resume)
 
     export = subs.add_parser(
         "export", help="convert a model to GGUF for llama.cpp, Ollama or LM Studio")

@@ -289,6 +289,8 @@ def teach(
     gpus: str | int = 1,
     device: str = "auto",
     answers: list[str] | None = None,
+    against: "Material | None" = None,
+    resume_from: int = 0,
     record: bool = True,
     on_log=None,
 ) -> dict:
@@ -311,6 +313,7 @@ def teach(
     block = min(context_length(model, network), 512)
 
     style = None
+    measured_on = "the held-out pairs"
     train_ids: list[int] = []
     eval_ids: list[int] = []
 
@@ -345,9 +348,24 @@ def teach(
                 f"{block}. Add more material, or make a model with a shorter context."
             )
 
-        # Hold out the tail so the reported loss is on text never trained on.
-        split = max(block, int(len(ids) * 0.05))
-        train_ids, eval_ids = ids[:-split], ids[-split:]
+        if against is not None and against.characters:
+            # Measured against writing from somewhere else entirely. The tail of
+            # the same corpus flatters a model that memorised it; a separate
+            # file does not, because there is nothing there to have memorised.
+            measured_on = "a separate file"
+            train_ids = ids
+            eval_ids = tokenizer(
+                against.text, add_special_tokens=False, verbose=False)["input_ids"]
+            if len(eval_ids) < block:
+                raise TeacherError(
+                    f"The text to measure against is only {len(eval_ids):,} tokens, and "
+                    f"one block is {block}. Give it more, or drop --eval-from."
+                )
+        else:
+            # Hold out the tail so the reported loss is on text never trained on.
+            measured_on = "the tail of the same text"
+            split = max(block, int(len(ids) * 0.05))
+            train_ids, eval_ids = ids[:-split], ids[-split:]
 
         train_set = PackedLMDataset(train_ids, block)
         eval_set = PackedLMDataset(eval_ids, block) if len(eval_ids) >= block else None
@@ -379,7 +397,9 @@ def teach(
             warmup_steps=max(5, int(len(train_set) * epochs / size * 0.03)),
             log_interval=max(1, len(train_set) // size // 10),
             eval_interval=max(10, len(train_set) // size // 4) if eval_set else 0,
-            checkpoint_interval=0,
+            # About ten times a lesson. Nothing was saved within a round before
+            # this, so a crash three hours in lost all three hours.
+            checkpoint_interval=max(25, int(len(train_set) * epochs / size) // 10),
             keep_last_checkpoints=keep_checkpoints,
         )
 
@@ -446,6 +466,31 @@ def teach(
             raise TeacherError(f"The lesson failed: {result.error}")
         lora_stats = result.lora or lora_stats
     else:
+        from teacher import interrupted
+
+        plan = {
+            "epochs": float(epochs),
+            "batch_size": settings.batch_size,
+            "learning_rate": float(learning_rate),
+            "block": block,
+            "style": style,
+            "sources": list(answers) if answers else list(material.sources),
+            "characters": material.characters,
+            "fingerprint": interrupted.fingerprint(material.text or "".join(
+                str(path) for path in (answers or []))),
+            "lora": bool(lora),
+            "lora_rank": int(lora_rank),
+        }
+        held: dict = {}
+
+        def keep_progress(step, loss, val_loss, is_best):
+            worker = held.get("trainer")
+            if worker is not None:
+                interrupted.write(
+                    model, worker.model, worker.optimizer, worker.scheduler,
+                    step=step, plan={**plan, "total_steps": held.get("total", 0)},
+                )
+
         trainer = Trainer(
             model=network,
             train_dataset=train_set,
@@ -453,8 +498,13 @@ def teach(
             config=settings,
             device=chosen_device,
             on_log=on_log,
+            on_checkpoint=keep_progress,
+            start_step=int(resume_from or 0),
         )
+        held["trainer"] = trainer
+        held["total"] = int(len(train_set) * epochs / max(1, settings.batch_size))
         result = trainer.train()
+        interrupted.clear(model)
         if result.status == "failed":
             raise TeacherError(f"The lesson failed: {result.error}")
 
@@ -483,6 +533,7 @@ def teach(
     lesson = {
         "at": started,
         "style": style or "text",
+        "measured_on": measured_on,
         "sources": list(answers) if answers else material.sources,
         "characters": material.characters,
         "pairs": len(train_set) if style else None,
