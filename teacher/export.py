@@ -97,10 +97,15 @@ def to_gguf(
     script = find_converter(converter)
     destination = Path(destination).expanduser()
     destination.parent.mkdir(parents=True, exist_ok=True)
+    # The converter writes beside the destination and the file is moved into
+    # place only once it has finished. A converter that fails half-way leaves
+    # nothing — and cannot spoil a good file from an earlier export.
+    partial = destination.with_name(destination.name + ".partial")
+    partial.unlink(missing_ok=True)
 
     command = [
         sys.executable, str(script), str(model.path),
-        "--outfile", str(destination),
+        "--outfile", str(partial),
         "--outtype", precision,
     ]
     if on_log:
@@ -109,20 +114,24 @@ def to_gguf(
     try:
         finished = subprocess.run(command, capture_output=True, text=True, timeout=3600)
     except FileNotFoundError as exc:
+        partial.unlink(missing_ok=True)
         raise TeacherError(f"Could not run the converter: {exc}") from exc
     except subprocess.TimeoutExpired as exc:
+        partial.unlink(missing_ok=True)
         raise TeacherError("The converter ran for an hour without finishing.") from exc
 
     if finished.returncode != 0:
+        partial.unlink(missing_ok=True)
         tail = (finished.stderr or finished.stdout or "").strip().splitlines()[-6:]
         raise TeacherError(
             "llama.cpp's converter refused this model:\n  "
             + "\n  ".join(tail or ["it gave no reason"])
             + "\n\n  Nothing was written."
         )
-    if not destination.exists():
+    if not partial.exists():
         raise TeacherError(
             f"The converter reported success but {destination} is not there.")
+    partial.replace(destination)
 
     return {
         "model": model.name,

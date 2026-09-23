@@ -80,7 +80,6 @@ material ──► model ──► lessons ──► using it
 | `ai_studio/training/trainer.py` | The training loop |
 | `ai_studio/training/config.py` | Training settings, the memory estimate, the batch finder |
 | `ai_studio/training/distributed.py` | Several GPUs |
-| `ai_studio/training/rate_finder.py` | The learning-rate range test behind `--rate auto` |
 
 Every command is in `teacher/__main__.py` as a `cmd_*` function; each does
 its work through the modules above, which is why the window and the command
@@ -229,8 +228,12 @@ left out — never silently cut short.
 
 **Cleaning** (`ai_studio/data/preprocessing.py`) removes what is not writing:
 page numbers, headers and footers repeated on every page, hyphens splitting a
-word across a line break, runs of blank lines, and repeated paragraphs inside a
-document. `--raw` skips it, for text that is exactly what you want already.
+word across a line break, runs of blank lines, empty sections, and repeated
+paragraphs inside a document. What applies depends on the kind of file: a PDF
+gets all of it; HTML and EPUB lose their tags but keep their numbers; Markdown
+keeps its headings and anything that looks like a page number; code blocks are
+kept as they are. `--raw` skips cleaning, for text that is exactly what you want
+already.
 
 **Repeats across sources are dropped.** The same book in two folders, or a
 chapter that is also on a saved web page, would teach the model to recite it —
@@ -479,10 +482,10 @@ activations to a quarter.
 
 **How close is it?** Measured on SmolLM2-135M at a 512-token block on a CPU:
 batch 4 peaked at 7.1 GB and batch 8 at 11.9 GB, against an estimate of
-12.7 GB for batch 8 before the margin and 15.4 GB after it. The arithmetic runs a little high; the
-margin is deliberately on top of that. So on a machine with 16 GB of RAM and no
-GPU, batch 8 on the `small` base is refused although it would just fit — batch 4
-or `--batch auto` is the answer.
+12.7 GB for batch 8 before the margin and 15.4 GB after it. The arithmetic runs
+a little high, and the margin is deliberately on top of that. So on a machine
+with 16 GB of RAM and no GPU, batch 8 on the `small` base is refused although
+it would just fit — batch 4 or `--batch auto` is the answer.
 
 **What goes wrong here:** *This lesson would not fit in memory* lists what
 was estimated and against what, and suggests in order: a smaller batch; more
@@ -515,68 +518,116 @@ With several GPUs the batch is **per GPU** — `--batch 8 --gpus 4` steps over
 ## Part 11 — Learning rates
 
 The learning rate is how far each step moves the weights. Too low and a lesson
-learns little; too high and it overshoots — it memorises the training text,
-gets *worse* on text it has not seen, and, for a pretrained model, forgets
-what it knew.
+learns a fraction of what it could; too high and it overshoots — it memorises
+the training text, gets *worse* on text it has not seen, and, for a pretrained
+model, forgets what it knew.
 
-**Leave `--rate` out.** The default is chosen per kind of lesson, from the
-table in `teacher/lessons.py` (`RATES`), because one rate for every kind was
-measured to be wrong:
+**Leave `--rate` out.** The default depends on the kind of lesson, because one
+rate for every kind was measured to be wrong in both directions. They are
+`RATES` in `teacher/lessons.py`:
 
-| Kind of lesson | Default | Why |
+| Kind of lesson | Default | |
 |---|---|---|
-| A pretrained base, every weight trained | **5e-5** | Measured: see below |
-| LoRA on a pretrained base | **3e-4** | The rate every lesson used before, kept until a measurement says otherwise |
-| A model built from scratch | **3e-4** | The same |
+| A pretrained base, every weight trained | **5e-5** | best of 2e-5, 5e-5, 1e-4 and 3e-4 |
+| LoRA on a pretrained base | **1e-3** | best of 1e-4, 3e-4, 1e-3 and 3e-3 |
+| A model built from scratch, up to 20M parameters | **3e-3** | best of 3e-4 to 3e-2, at 1M and 10M |
+| A model built from scratch, larger | 3e-3 × 20M ÷ its size, never under 3e-4 | a rule of thumb — not measured |
 
-**The measurement behind the pretrained default.** SmolLM2-135M (the `small`
-base), taught three epochs of five Wikipedia articles about lighthouses —
-171,391 characters, 48,052 tokens, batch 4, the same seed and data every time
-— with only the rate changed. Every number is measured on the weights the
-lesson saved, on three texts: the held-out tail of the material, a sixth
-article on the same subject that was never trained on, and three unrelated
-articles (photosynthesis, Baroque music, volcanoes) for how much it forgot.
+`--rate 1e-4` sets one by hand. Every lesson records the rate it used and
+where it came from (`given`, or `the default for this kind of lesson`), and a
+model card shows it for every lesson.
 
-| Rate | Held-out tail | Unseen article, same subject | Unrelated text | Training loss at the end |
+### How the defaults were measured
+
+Every lesson below read the same material — five Wikipedia articles about
+lighthouses, 171,391 characters — for three epochs, with the same seed and
+data order; only the rate changed. Every number is measured on **the weights
+the lesson saved**, on up to three texts: the held-out tail of the material,
+a sixth article on the same subject that was never trained on, and three
+unrelated articles (photosynthesis, Baroque music, volcanoes) for how much a
+pretrained model forgot. Lower is better; the change from before the lesson
+is in brackets.
+
+**A pretrained base, every weight trained** — SmolLM2-135M (the `small` base),
+batch 4:
+
+| Rate | Held-out tail | Unseen article | Unrelated text |
+|---|---|---|---|
+| before the lesson | 2.7079 | 2.7181 | 2.1860 |
+| 3e-4 (the old default) | 2.7152 **(+0.007)** | 2.7912 (+0.073) | 2.3443 **(+0.158)** |
+| 1e-4 | 2.5657 (−0.142) | 2.6388 (−0.079) | 2.1834 (−0.003) |
+| **5e-5** | **2.5567 (−0.151)** | **2.6205 (−0.098)** | 2.1519 (−0.034) |
+| 2e-5 | 2.5844 (−0.124) | 2.6400 (−0.078) | 2.1487 (−0.037) |
+
+At 3e-4 the model memorised its material — a training loss of 1.23 against a
+held-out 2.72 — got worse on text from its own material than it had been before
+the lesson, and forgot general English. At 5e-5 it improved on every text. 2e-5
+forgot no less and learned less in the time. Run again with a different data
+order, 5e-5 came out within 0.002 on all three, so the differences in this
+table are not noise.
+
+**LoRA**, rank 16 on the same base, batch 4 (changes from the same 2.7079 /
+2.7181 / 2.1860):
+
+| Rate | Held-out tail | Unseen article | Unrelated text |
+|---|---|---|---|
+| 1e-4 | −0.036 | −0.023 | −0.012 |
+| 3e-4 (the old default) | −0.086 | −0.043 | −0.020 |
+| **1e-3** | **−0.104** | **−0.055** | −0.009 |
+| 3e-3 | −0.104 | −0.036 | **+0.031** |
+
+An adapter starts at zero and is small, so it takes larger steps than the
+whole model does. At 3e-3 it learned no more and began to forget.
+
+**Built from scratch**, batch 8, 256-token context. The held-out tail here is
+ten blocks and moves by a few hundredths from one fresh model to the next; the
+unseen article, forty times larger, is the steadier number:
+
+| Rate | 1M: held-out tail | 1M: unseen article | 10M: held-out tail | 10M: unseen article |
 |---|---|---|---|---|
-| before any lesson | 2.7079 | 2.7181 | 2.1860 | — |
-| 3e-4 (the old default) | 2.7152 **(+0.007)** | 2.7912 (+0.073) | 2.3443 **(+0.158)** | 1.23 |
-| 1e-4 | 2.5657 (−0.142) | 2.6388 (−0.079) | 2.1834 (−0.003) | 1.98 |
-| 5e-5 | **2.5567 (−0.151)** | **2.6205 (−0.098)** | **2.1519 (−0.034)** | 2.33 |
+| 3e-4 (the old default) | 7.772 | 7.748 | 6.850 | 6.795 |
+| 7.6e-4 | | | 6.779 | 6.654 |
+| 1e-3 | 7.143 | 7.010 | 6.907 | 6.722 |
+| **3e-3** | **6.846** | **6.739** | 6.824 | 6.662 |
+| 6.3e-3 | 7.008 | 6.788 | | |
+| 1e-2 | 7.005 | 6.798 | 6.828 | 6.676 |
+| 3e-2 | 7.014 | 6.773 | | |
 
-At 3e-4 the model memorised its material (a training loss of 1.23 against a
-held-out 2.72), got *worse* on text from its own material than it had been
-before the lesson, and forgot general English — its loss on unrelated text
-rose by 0.16. At 5e-5 it improved on every text, including the unrelated one.
+(before any lesson: 8.28 for the 1M model, 8.41–8.44 for the 10M.) A model
+starting from noise has nothing to protect and everything to learn: at 3e-4 the
+1M model barely left the starting line. Larger models take smaller steps as a
+rule, and nothing above 10M was measured, so the rate is scaled down above 20M
+parameters rather than carried up unchanged.
 
-`--rate 5e-5` sets one by hand. The lesson records the rate it used and where
-it came from (`given`, `the default for this kind of lesson`, or `measured`),
-and a model card shows it for every lesson.
+### Why there is no `--rate auto`
 
-### `--rate auto`: the range test
+A learning-rate range test — a few dozen steps at a rate climbing from 1e-7
+to 1e-1, reading off where the loss falls fastest and where it bottoms out,
+and taking a tenth of the bottom — was built, and measured against the tables
+above before being offered. It is not offered:
 
-`ai_studio/training/rate_finder.py`. A few dozen optimizer steps at a rate
-climbing exponentially from 1e-7 to 1e-1, watching the training loss
-(smoothed): flat while the rate is too small, falling fastest somewhere in the
-middle, blowing up at the top — the test stops once the loss is four times
-its lowest. The rate taken is a tenth of where the loss bottomed out, and never
-more than where it fell fastest.
+| Kind of lesson | The range test picked | The best rate | |
+|---|---|---|---|
+| Pretrained, every weight | 7.6e-4 | 5e-5 | 3e-4 already made the model worse and made it forget; this is 2.5 times that |
+| LoRA | 6.5e-8 | 1e-3 | The loss moved less than it varies from batch to batch, so the curve was noise |
+| From scratch, 1M | 6.3e-3 | 3e-3 | A little worse than the default |
+| From scratch, 10M | 7.6e-4 | 7.6e-4 to 1e-2 | As good as the default, no better |
 
-The test trains the weights at rates far too high on purpose, so it runs on a
-copy in memory and the lesson then starts again from the weights on disk. It
-costs a few dozen steps — seconds on a GPU, several minutes for a 135M model on
-a CPU.
-
-<!-- rates-auto -->
+A range test rewards how fast the *training* loss falls over a few dozen
+steps — which is exactly what a rate that is about to overshoot does best. It
+was designed for training from scratch, and there it was no better than a
+fixed default. So it would have picked a damaging rate for the most common
+lesson, noise for LoRA, and nothing better than the default anywhere else.
 
 **What goes wrong here:**
 
-- *…makes no sense; they sit between about 1e-6 and 1e-2* — the number given is
-  not a learning rate (zero, negative, or one or more).
-- *The range test could not read a rate* — the loss never fell by more than
-  noise, or blew up at once. The lesson carries on at the default and says so.
-- A lesson makes the model worse — the rate is too high for it. Leave `--rate`
-  out, or lower it, and fewer `--epochs` do the same job.
+- *A learning rate of N makes no sense; they sit between about 1e-6 and 1e-2*
+  — the number given is not a learning rate (zero, negative, or one or more).
+- A lesson makes the model worse — the rate is too high for it, or the lesson
+  too long. Leave `--rate` out; fewer `--epochs` do the same job.
+- A lesson from scratch learns very little — check the rate it recorded (its
+  model card lists every lesson's, and so does `history.json`); a hand-set 3e-4
+  is a tenth of what a small model from scratch can use.
 
 ---
 
@@ -599,8 +650,10 @@ loss and decides whether to go on. It stops when:
 already past the stage asked for is left alone.
 
 Every round is saved as it finishes, so Ctrl+C leaves the last completed round
-on disk. The whole run is one entry in the record, with each round's loss kept
-inside it.
+on disk. The whole run is one entry in the record, with each round's loss and
+the weights each round saved kept inside it — so a later rollback into the
+middle of the run is placed exactly, and a model card says how many of its
+rounds are in the weights (Part 17).
 
 ---
 
@@ -646,10 +699,12 @@ lesson, or branching from a state before it, drops the template again.
 
 **How the answer is found in the tokens.** The template's prompt part and the
 whole example are tokenized separately, and the answer starts where the two
-stop agreeing token by token. (Tokenizing the prompt alone and taking its
-length was off by one whenever the tokenizer merged the last prompt character
-with the first answer character — which masked the first word of every answer
-and taught the model to reply with nothing.)
+stop agreeing token by token. (Taking the length of the prompt tokenized on its
+own counted the end-of-text token a tokenizer appends to a lone piece of text —
+so the first token of every answer was masked as if it were prompt, and a model
+taught that way learned to reply with nothing. Comparing token by token also
+survives a tokenizer that merges the prompt's last character with the
+answer's first.)
 
 **What goes wrong here:**
 
@@ -738,8 +793,8 @@ its fingerprint, and puts everything back:
 
 - **the weights** as they were at the last save;
 - **the optimizer's state** — AdamW's running averages of every weight's
-  gradient and of its square, and its step count. Without them a resumed run
-  moves like a new one for its first hundred or so steps;
+  gradient and of its square, and its step count. Without them the first steps
+  after resuming are as large and as noisy as a brand-new run's;
 - **the place in the schedule** — the learning rate at the saved step, not
   back at the warm-up;
 - **the place in the data** — the shuffle draws from a generator of its own,
@@ -754,6 +809,10 @@ through, to within a millionth; a test holds it to that. The shared random
 state that dropout draws on is not restored, so a model that uses dropout
 (LoRA's adapters do, at 5%) ends close to, not exactly on, the same weights.
 The window shows a *Resume* button whenever there is something to resume.
+
+**A lesson across several GPUs does not write itself down yet**, so it cannot
+be resumed; if one is interrupted, the weights from before it are still in the
+model's folder, untouched. Answer lessons are not resumable either (Part 13).
 
 **What goes wrong here:**
 
@@ -981,10 +1040,13 @@ repository, as the instructions have it.
 `--precision`: `f16` (the usual choice), `bf16`, `f32` or `q8_0`. Smaller
 quantisations are a second step through llama.cpp's `llama-quantize`.
 
-**Nothing is written unless it worked.** If the converter is missing, or
-refuses the model, the reason is shown verbatim and no file is left behind. A
-reported success whose file is not there is reported as a failure. After an
-hour it is stopped.
+**Nothing is written unless it worked.** The converter writes to
+`NAME.gguf.partial` beside the destination, and the file is renamed into place
+only when the converter has finished and succeeded. If it is missing, refuses
+the model, dies half-way or runs past an hour, the partial file is deleted and
+the reason is shown verbatim — and a good file from an earlier export at the
+same path is left exactly as it was. A reported success with no file is
+reported as a failure.
 
 Only models started from a pretrained base convert: llama.cpp implements the
 architectures it knows, and Teacher's own is not one of them. Beside the file
@@ -1137,7 +1199,10 @@ took one run from 22.75 s to 18.77 s.
 | The held-out loss went up | The lesson overshot | `teacher rollback NAME`; lower `--rate` or fewer `--epochs` (Part 11) |
 | It repeats itself | Small model, repetitive material | Part 19 |
 | ◆ or � in replies | Half-learned byte tokens | Part 19 |
-| An answer-taught model replies to nothing | Asked outside its template | Ask through Teacher, which applies it; check `answer_style` in `history.json` |
+| An answer-taught model replies to nothing | Asked outside its template — or taught by a Teacher from before the masking fix, which hid the first word of every answer (Part 13) | Ask through Teacher, which applies the template; check `answer_style` in `history.json`; if it was taught before the fix, teach it again |
+| A lesson on the `small` base is refused for memory on a 16 GB machine without a GPU | Batch 8 is estimated past the RAM there is (Part 9) | `--batch 4`, or `--batch auto` |
+| `resume` says the material changed, though you did not touch it | The fingerprint is taken on the cleaned text; updating Teacher between the crash and the resume can change the cleaning | Start the lesson again |
+| The window shows the GPU count as a number you cannot change | One GPU or none — there is nothing to choose | Nothing; it trains on what there is |
 | A benchmark score looks good but says "indistinguishable" | Inside the noise | Part 20 — more `--items`, or accept it |
 | A client of `serve` gets 404 | Wrong model name | Part 23 |
 | Killed by the operating system mid-lesson | Out of memory beyond the estimate | Halve `--batch`; `teacher resume NAME` picks up from the last save |
@@ -1182,6 +1247,7 @@ what is filled in).
 | `Give something to search for, or at least one address.` | The same, from the window |
 | `--list shows what a search found; give it something to search for.` | `--list` needs a query |
 | `Nothing readable came back.` | Every page failed; the reasons follow (Part 5) |
+| `The search found nothing. Tried web: …; wikipedia: …` | Both engines failed or returned nothing — a search engine may be rate-limiting you. Wait a minute, or give the pages' addresses with `--url` |
 
 #### Teaching
 
@@ -1268,7 +1334,7 @@ what is filled in).
 | `Nothing readable in PATH, so there would be nothing to measure against.` | The *Measure against* box points at nothing readable |
 | `Batch size 'X' is not a number. Use a whole number, or auto.` | Part 10 |
 | `Batch size is a whole number, 1 or more — or auto.` | Part 10 |
-| `Learning rate 'X' is not a number. Leave it empty for the default, or type something like 5e-5, or auto.` | Part 11 |
+| `Learning rate 'X' is not a number. Leave it empty for the measured default, or type something like 5e-5.` | Part 11 |
 | `N is not a learning rate — they sit between about 1e-6 and 1e-2.` | Part 11 |
 | `Pick at least two models to compare.` | Two or more in *Compare models* |
 | `Write a prompt for them all to continue.` | A prompt for *Compare models* |

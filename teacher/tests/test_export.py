@@ -124,6 +124,25 @@ def test_a_real_conversion_reports_what_it_wrote(tmp_path):
     assert Path(written["path"]).read_bytes()[:4] == b"GGUF"
 
 
+def test_a_converter_that_dies_half_way_leaves_nothing_and_spoils_nothing(tmp_path):
+    """A partial file, or a good earlier export overwritten by a failed one,
+    would be a .gguf that llama.cpp cannot open."""
+    model = make("adopted5", "llama")
+    earlier = tmp_path / "kept.gguf"
+    earlier.write_bytes(b"GGUF" + b"\x01" * 50)
+    script = tmp_path / "convert_hf_to_gguf.py"
+    script.write_text(
+        "import sys\n"
+        "out = sys.argv[sys.argv.index('--outfile') + 1]\n"
+        "open(out, 'wb').write(b'GGUF half')\n"
+        "sys.exit('ran out of disk')\n"
+    )
+    with pytest.raises(TeacherError, match="ran out of disk"):
+        export.to_gguf(model, earlier, converter=str(script))
+    assert earlier.read_bytes() == b"GGUF" + b"\x01" * 50, "the earlier export is untouched"
+    assert [path.name for path in tmp_path.glob("*.gguf*")] == ["kept.gguf"]
+
+
 def test_every_precision_is_described():
     for name, description in export.TYPES.items():
         assert description, f"{name} has no explanation"

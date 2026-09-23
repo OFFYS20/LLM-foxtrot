@@ -123,17 +123,15 @@ def parse_batch(value) -> int | str:
 
 
 def parse_rate(value):
-    """The rate box: empty for the measured default, a number, or auto."""
+    """The rate box: empty for the measured default, or a number."""
     text = str(value if value is not None else "").strip().lower()
     if text in ("", "default"):
         return None
-    if text == "auto":
-        return "auto"
     try:
         rate = float(text)
     except ValueError:
         raise TeacherError(f"Learning rate '{value}' is not a number. Leave it empty for "
-                           f"the default, or type something like 5e-5, or auto.") from None
+                           f"the measured default, or type something like 5e-5.") from None
     if not 0 < rate < 1:
         raise TeacherError(f"{rate:g} is not a learning rate — they sit between about "
                            f"1e-6 and 1e-2.")
@@ -862,8 +860,8 @@ def build() -> gr.Blocks:
                                                info="a number, or auto to fill the hardware")
                             rate = gr.Textbox(value="", label="Learning rate",
                                               placeholder="default for this kind of model",
-                                              info="empty for the measured default, a number "
-                                                   "like 5e-5, or auto")
+                                              info="empty for the measured default — 5e-5 "
+                                                   "pretrained, 1e-3 LoRA, 3e-3 from scratch")
                         gpus = gpu_picker()
                         with gr.Accordion("More", open=False):
                             with gr.Row():

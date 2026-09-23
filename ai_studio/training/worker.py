@@ -24,6 +24,7 @@ from ai_studio.core.errors import (
     ValidationError,
 )
 from ai_studio.training.checkpoint_manager import (
+    load_checkpoint_weights,
     load_training_state,
     prune_checkpoints,
     restore_training_state,
@@ -361,8 +362,10 @@ class TrainingManager:
             raise NotFoundError(f"Checkpoint {checkpoint_id_or_path} not found.")
 
         state = load_training_state(path)
+        loaded = load_checkpoint_weights(path, model)
         restored = restore_training_state(state)
-        console(f"[RESUME] continuing from step {restored['step']} ({path.name})")
+        console(f"[RESUME] continuing from step {restored['step']} ({path.name}, "
+                f"{'adapter' if loaded == 'adapter' else 'weights'} and training state restored)")
         return restored["step"], state
 
     def _flush(self, pending: list[dict[str, Any]]) -> None:

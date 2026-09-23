@@ -317,14 +317,14 @@ def run_until(model, material, args) -> int:
                 reason=summary["reason"], seconds=summary["seconds"])
 
 
-def rate_value(text: str):
-    """--rate: a number, or "auto"."""
-    if text.strip().lower() == "auto":
-        return "auto"
+def rate_value(text: str) -> float:
+    """--rate: a learning rate."""
     try:
         value = float(text)
     except ValueError:
-        raise argparse.ArgumentTypeError(f"'{text}' is not a rate — try 5e-5, or auto") from None
+        raise argparse.ArgumentTypeError(
+            f"'{text}' is not a rate — try 5e-5, or leave --rate out for the measured "
+            f"default") from None
     if not 0 < value < 1:
         raise argparse.ArgumentTypeError(f"{value:g} is not a learning rate — they sit "
                                          f"between about 1e-6 and 1e-2")
@@ -699,12 +699,14 @@ def cmd_show(args) -> int:
     history = model.history()
     lessons_taught = history.get("lessons", [])
 
+    # One set of names whatever the kind: a pretrained model's config calls
+    # its layers num_hidden_layers (or n_layer), not num_layers.
+    shape = card.shape(model)
     say(style(model.name, BOLD))
     say(f"  path        {model.path}")
-    say(f"  layers      {arch.get('num_layers')}   hidden {arch.get('hidden_size')}   "
-        f"heads {arch.get('num_heads')}")
-    say(f"  context     {arch.get('max_position_embeddings')} tokens")
-    say(f"  vocabulary  {arch.get('vocab_size'):,} tokens")
+    say(f"  layers      {shape['layers']}   hidden {shape['width']}   heads {shape['heads']}")
+    say(f"  context     {shape['context']} tokens")
+    say(f"  vocabulary  {shape['vocabulary'] or 0:,} tokens")
     say(f"  on disk     {fmt_bytes(model.size_bytes())}")
     if history.get("branched_from"):
         say(f"  branched    from {history['branched_from']} at {history['branched_at']}")
@@ -721,22 +723,30 @@ def cmd_show(args) -> int:
                     branched_from=history.get("branched_from"),
                     branched_at=history.get("branched_at"))
 
-    say(f"\n  {len(lessons_taught)} lesson(s), {fmt_count(model.taught_characters())} characters total")
+    carried = workspace.lineage(history, model.weights_stamp())
+    undone = {(entry.get("at"), entry.get("weights")) for entry in carried["undone"]}
+    say(f"\n  {len(lessons_taught)} lesson(s), {fmt_count(model.taught_characters())} characters total"
+        + (f" — {len(undone)} undone by a rollback" if undone else ""))
     for index, lesson in enumerate(lessons_taught[-8:], start=max(1, len(lessons_taught) - 7)):
         when = time.strftime("%Y-%m-%d %H:%M", time.localtime(lesson.get("at", 0)))
         loss = lesson.get("held_out_loss") or lesson.get("final_loss")
+        before = lesson.get("held_out_before")
         sources = lesson.get("sources", [])
         first = Path(sources[0]).name if sources else "?"
         more = f" +{len(sources) - 1}" if len(sources) > 1 else ""
-        say(f"    {index:>2}. {when}  loss {loss:.4f}   "
-            f"{fmt_count(lesson.get('characters'))}c  {first}{more}"
-            if loss is not None else f"    {index:>2}. {when}  {first}{more}")
+        change = (f"{before:.4f} -> {loss:.4f}" if before is not None and loss is not None
+                  else f"loss {loss:.4f}" if loss is not None else "")
+        mark = "  (undone)" if (lesson.get("at"), lesson.get("weights")) in undone else ""
+        say(f"    {index:>2}. {when}  {change:<18} "
+            f"{fmt_count(lesson.get('characters'))}c  {first}{more}{mark}")
 
     last = lessons_taught[-1]
     label, note, share = lessons.judge(model, last.get("held_out_loss"))
     return emit(command="show", model=model.name, kind=model.kind(), base=model.base_repo(),
                 architecture=arch, lessons=len(lessons_taught), stage=label, advice=note,
-                share=round(share, 4), held_out_loss=last.get("held_out_loss"),
+                lessons_in_effect=len(carried["in_effect"]), lessons_undone=len(undone),
+                share=round(share, 4), held_out_before=last.get("held_out_before"),
+                held_out_loss=last.get("held_out_loss"),
                 taught_characters=model.taught_characters(), path=str(model.path),
                 saved_states=[state["stamp"] for state in states],
                 branched_from=history.get("branched_from"),
@@ -1086,9 +1096,9 @@ def build_parser() -> argparse.ArgumentParser:
                          help="sequences per step (default 8). 'auto' picks the largest "
                               "that fits, which is usually what a half-idle GPU is missing")
         sub.add_argument("--rate", type=rate_value, default=None,
-                         help="learning rate: a number like 5e-5, or 'auto' to measure one on "
-                              "this model (default: measured per kind of lesson — see "
-                              "'Learning rates' in teacher/README.md)")
+                         help="learning rate, like 5e-5 (default: measured for each kind of "
+                              "lesson — 5e-5 pretrained, 1e-3 with --lora, 3e-3 from "
+                              "scratch; see 'Learning rates' in teacher/README.md)")
         sub.add_argument("--until", choices=list(lessons.TARGETS), metavar="STAGE",
                          help="keep teaching until it reaches this stage, or stops improving: "
                               + ", ".join(lessons.TARGETS))

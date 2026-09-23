@@ -175,13 +175,12 @@ def test_the_batch_box_takes_a_number_or_auto(typed, expected):
     assert ui.parse_batch(typed) == expected
 
 
-@pytest.mark.parametrize("typed,expected", [("", None), ("default", None), ("auto", "auto"),
-                                            ("5e-5", 5e-5)])
-def test_the_rate_box_takes_nothing_a_number_or_auto(typed, expected):
+@pytest.mark.parametrize("typed,expected", [("", None), ("default", None), ("5e-5", 5e-5)])
+def test_the_rate_box_takes_nothing_or_a_number(typed, expected):
     assert ui.parse_rate(typed) == expected
 
 
-@pytest.mark.parametrize("typed", ["fast", "2", "-1e-4"])
+@pytest.mark.parametrize("typed", ["fast", "auto", "2", "-1e-4"])
 def test_a_rate_that_is_not_one_is_refused_in_words(typed):
     with pytest.raises(TeacherError):
         ui.parse_rate(typed)

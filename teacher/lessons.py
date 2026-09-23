@@ -108,21 +108,44 @@ BASES = {
 }
 
 #: The learning rate a lesson starts from when none is given. One number for
-#: every kind of lesson was wrong: a pretrained model taught at the rate that
-#: suits one built from noise gets worse on text it has not seen, and forgets
-#: what it knew. These were measured — the table is in teacher/README.md.
+#: every kind of lesson was wrong in both directions: a pretrained model taught
+#: at 3e-4 got worse on text it had not seen and forgot what it knew, while a
+#: model built from scratch at 3e-4 learned a fraction of what it could. Each
+#: of these is the best of lessons run to the end at a spread of rates — the
+#: tables are in docs/MANUAL.md, Part 11.
 RATES = {
-    "scratch": 3e-4,
     "pretrained": 5e-5,
-    "lora": 3e-4,
+    "lora": 1e-3,
+    "scratch": 3e-3,
 }
+
+#: Models built from scratch were measured at 1M and 10M parameters. Larger
+#: ones take smaller steps: above this size the rate falls in proportion,
+#: down to 3e-4 — a rule of thumb, not a measurement.
+SCRATCH_MEASURED_UP_TO = 20_000_000
+SCRATCH_FLOOR = 3e-4
+
+
+def lesson_kind(model: Model, *, lora: bool = False) -> str:
+    """pretrained, lora or scratch — the three kinds of lesson with their own rates."""
+    if lora:
+        return "lora"
+    return "scratch" if model.kind() == "studio" else "pretrained"
 
 
 def default_rate(model: Model, *, lora: bool = False) -> float:
-    """The measured starting rate for this kind of lesson."""
-    if lora:
-        return RATES["lora"]
-    return RATES["scratch"] if model.kind() == "studio" else RATES["pretrained"]
+    """The measured starting rate for this kind of lesson, and this size."""
+    kind = lesson_kind(model, lora=lora)
+    if kind != "scratch":
+        return RATES[kind]
+    size = model.history().get("parameters")
+    if not size:
+        from teacher.card import parameter_count
+
+        size = parameter_count(model) or 0
+    if size <= SCRATCH_MEASURED_UP_TO:
+        return RATES["scratch"]
+    return max(SCRATCH_FLOOR, RATES["scratch"] * SCRATCH_MEASURED_UP_TO / size)
 
 
 SPECIALS = ["<unk>", "<s>", "</s>", "<pad>"]
@@ -357,10 +380,9 @@ def teach(
     which teaches it to reply.
 
     ``learning_rate`` left out takes the measured default for this kind of
-    lesson (see ``RATES``); "auto" measures one on this model and material.
+    lesson (see ``RATES``).
     """
-    measuring_rate = str(learning_rate).strip().lower() == "auto"
-    if learning_rate is None or measuring_rate:
+    if learning_rate is None:
         rate, rate_from = default_rate(model, lora=lora), "the default for this kind of lesson"
     else:
         rate, rate_from = float(learning_rate), "given"
@@ -524,32 +546,6 @@ def teach(
             + ("\n\nTry:\n  " + "\n  ".join(check.suggestions) if check.suggestions else "")
         )
 
-    rate_test = None
-    if measuring_rate:
-        from ai_studio.training.rate_finder import range_test
-
-        if on_log:
-            on_log("[PREP] measuring a learning rate: a few dozen steps at rates rising "
-                   "from far too low to far too high")
-        found = range_test(network, train_set, batch_size=settings.batch_size,
-                           device=chosen_device, seed=settings.seed)
-        rate_test = found.to_dict()
-        if found.suggestion is None:
-            if on_log:
-                on_log(f"[WARN] the range test could not read a rate — {found.reason}; "
-                       f"using the default, {rate:g}")
-        else:
-            rate, rate_from = found.suggestion, f"measured — {found.reason}"
-            settings = configure(settings.batch_size)
-            if on_log:
-                on_log(f"[PREP] {found.reason}; teaching at {rate:.1e}")
-        # The test trained these weights at rates far too high on purpose.
-        # The lesson starts again from the weights on disk.
-        network = load_network(model)
-        if lora:
-            lora_stats = _attach_lora(model, network, settings, lora_rank)
-            network = lora_stats.pop("network")
-
     started = time.time()
 
     if world_size > 1 and style:
@@ -677,7 +673,6 @@ def teach(
         "gpus": world_size,
         "learning_rate": rate,
         "rate_from": rate_from,
-        "rate_test": rate_test,
         "batch_size": settings.batch_size,
         "status": result.status,
         # Which weights it began from and which it saved: the links a model

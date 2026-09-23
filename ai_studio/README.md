@@ -330,8 +330,12 @@ leave a half-written checkpoint that looks valid.
 
 * **Checkpoints → Verify** reports what a checkpoint contains and whether it is
   resumable (weights + training state) or only loadable (weights alone).
-* **Training → Resume from checkpoint** continues a run with the optimizer
-  moments, schedule position and RNG restored.
+* **Training → Resume from checkpoint** continues a run from the checkpoint's
+  weights (or its LoRA adapter), with the optimizer moments, the schedule's
+  position, the place in the data and the RNG restored. (Until September 2026
+  it restored the training state but not the weights, so a "resumed" run
+  carried on from step N with the model's original weights — check any run
+  resumed before then.)
 * Pruning keeps the last *N* and always keeps the best one unless you say otherwise.
 * **Register as model** promotes a checkpoint into the model registry.
 

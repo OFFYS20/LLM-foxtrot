@@ -175,7 +175,9 @@ def _front_matter(f: dict, export: dict | None) -> list[str]:
     lines = ["---"]
     if f["base_repo"]:
         lines.append(f"base_model: {f['base_repo']}")
-    if f["kind"] == "pretrained":
+    if f["kind"] == "pretrained" and not export:
+        # Beside a GGUF file the card describes that file, which Transformers
+        # does not load; the gguf tag is what the Hub goes by there.
         lines.append("library_name: transformers")
     lines += ["pipeline_tag: text-generation", "tags:", "- teacher", "- text-generation"]
     if export:
@@ -268,6 +270,22 @@ def render(f: dict, *, export: dict | None = None) -> str:
 def _how_to_use(f: dict, export: dict | None) -> list[str]:
     from teacher.answers import OPENERS
 
+    if export:
+        out = [
+            "## Using it", "",
+            "```",
+            f'llama-cli -m {export["file"]} -p "your prompt"',
+            f"printf 'FROM ./{export['file']}\\n' > Modelfile && "
+            f"ollama create {f['name']} -f Modelfile",
+            "```", "",
+            "LM Studio: put the file in its models folder and pick it from the list.", "",
+        ]
+        if f["answer_style"] in OPENERS:
+            template = OPENERS[f["answer_style"]].format(prompt="{your question}")
+            out += ["It was taught to answer in this form, and answers best when asked "
+                    "in it:", "", "```", template.rstrip("\n"), "```", ""]
+        return out
+
     out = ["## Using it", "", "```", f'python -m teacher ask {f["name"]} "your prompt"',
            f"python -m teacher serve {f['name']}      # an OpenAI-compatible API", "```", ""]
     if f["answer_style"] in OPENERS:
@@ -288,9 +306,6 @@ def _how_to_use(f: dict, export: dict | None) -> list[str]:
             "own. Run it with Teacher, with AI Studio, or in a browser with Bench "
             f"(`python -m teacher pack {f['name']}`).", "",
         ]
-    if export:
-        out += [f"This card sits beside `{export['file']}`, a GGUF file for llama.cpp, "
-                "Ollama and LM Studio.", ""]
     return out
 
 

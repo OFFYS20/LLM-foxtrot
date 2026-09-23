@@ -112,14 +112,14 @@ def test_a_first_round_that_makes_it_worse_keeps_nothing(made, monkeypatch):
     assert summary["rounds_kept"] == 0 and summary["held_out_loss"] == 2.2
 
 
-def test_the_range_test_reads_a_rate_off_a_real_curve(made):
-    from ai_studio.training.data import PackedLMDataset
-    from ai_studio.training.rate_finder import range_test
-
-    tokenizer = lessons.load_tokenizer(made)
-    ids = tokenizer(TEXT, add_special_tokens=False)["input_ids"]
-    found = range_test(lessons.load_network(made), PackedLMDataset(ids, 64),
-                       batch_size=8, device="cpu", steps=40)
-    assert len(found.losses) >= 8
-    assert found.suggestion is None or 1e-7 <= found.suggestion <= 1e-1
-    assert found.reason
+def test_a_bigger_model_from_scratch_takes_smaller_steps(made, monkeypatch):
+    """Measured at 1M and 10M; above that the rate falls with size, to a floor."""
+    history = made.history()
+    measured = lessons.SCRATCH_MEASURED_UP_TO
+    for size, expected in [(1_000_000, lessons.RATES["scratch"]),
+                           (measured, lessons.RATES["scratch"]),
+                           (measured * 2, lessons.RATES["scratch"] / 2),
+                           (measured * 1000, lessons.SCRATCH_FLOOR)]:
+        monkeypatch.setattr(type(made), "history", lambda self, size=size: {**history,
+                                                                            "parameters": size})
+        assert lessons.default_rate(made) == pytest.approx(expected)

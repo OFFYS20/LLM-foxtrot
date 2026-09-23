@@ -393,28 +393,25 @@ measured rather than guessed — see [Learning rates](#learning-rates) below.
 
 ### Learning rates
 
-One rate for every kind of lesson was wrong. Teaching a pretrained model at
-the rate that suits one built from noise made it **worse** on text it had not
-seen, and made it forget what it knew. Measured on the `small` base
-(SmolLM2-135M), three epochs of five Wikipedia articles, the same seed and
-data every time, only the rate changed — each number on the weights the
-lesson saved:
+One rate for every kind of lesson was wrong in both directions. Teaching a
+pretrained model at 3e-4 made it **worse** on text it had not seen and made it
+forget what it knew; building a model from scratch at 3e-4 left it learning a
+fraction of what it could. Each default is now the best of lessons run to the
+end at a spread of rates — the same material, seed and data order every time,
+each number measured on the weights the lesson saved:
 
-| Rate | Held-out tail | Unseen article, same subject | Unrelated text |
-|---|---|---|---|
-| before any lesson | 2.7079 | 2.7181 | 2.1860 |
-| 3e-4 (the old default) | 2.7152 (worse) | 2.7912 (worse) | 2.3443 (forgot) |
-| 1e-4 | 2.5657 | 2.6388 | 2.1834 |
-| **5e-5** | **2.5567** | **2.6205** | **2.1519** |
+| Kind of lesson | Default | What the old 3e-4 did, measured |
+|---|---|---|
+| A pretrained base (`--base`) | **5e-5** | held-out 2.708 → 2.715 (worse), unrelated text 2.186 → 2.344 (forgot); at 5e-5: 2.557 and 2.152 |
+| `--lora` on a pretrained base | **1e-3** | learned about four-fifths as much as 1e-3; at 3e-3 it began to forget |
+| From scratch, up to 20M parameters | **3e-3** | a 1M model reached 7.77 held-out; at 3e-3, 6.85 |
+| From scratch, larger | falls with size to 3e-4 | not measured — a rule of thumb |
 
-So a pretrained model is now taught at **5e-5** unless you say otherwise.
-LoRA and models built from scratch keep 3e-4. `--rate 1e-4` sets one by hand;
-`--rate auto` measures one on your model first with a range test — a few
-dozen steps at rates climbing from far too small to far too large — and
-reloads the weights before the lesson proper. Every lesson records the rate
-it used and where it came from.
-
-The whole method, and what the range test does, is in the
+`--rate 1e-4` sets one by hand, and every lesson records the rate it used and
+where it came from. There is no `--rate auto`: a learning-rate range test was
+built and measured against these tables first, and it picked a rate 15 times
+too high for a pretrained model, noise for LoRA, and nothing better than the
+default from scratch. The full tables, and that test, are in the
 [manual](../docs/MANUAL.md#part-11--learning-rates).
 
 ### Training until it is actually done

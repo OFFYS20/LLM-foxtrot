@@ -172,13 +172,12 @@ still leaves enough optimizer steps to learn from. Use it when a GPU is sitting
 at half load.
 
 **Learning rate** — leave `--rate` out. The default depends on the kind of
-lesson — from scratch, a pretrained base, or `--lora` — because one rate for
-all three was measured to make pretrained models *worse* on text they had not
-seen, and to forget what they knew. The measurements are in the "Learning
-rates" section of `teacher/README.md`. `--rate 5e-5` sets one by hand;
-`--rate auto` measures one on this model first (a range test: a few dozen
-steps at rising rates, then the weights are reloaded). The reply's
-`learning_rate` says what was used.
+lesson: 5e-5 for a pretrained base, 1e-3 with `--lora`, 3e-3 for a model built
+from scratch (smaller for large ones). One rate for all three was measured to
+make pretrained models *worse* and to leave models from scratch far short of
+what they could learn; the measurements are in the "Learning rates" section of
+`teacher/README.md`. `--rate 1e-4` sets one by hand. There is no `auto` — the
+reply's `learning_rate` says what was used.
 
 **Rounds that make it worse are undone** — with `--until`, a round whose
 held-out loss is higher than the round before is rolled back, and the reply's
@@ -242,7 +241,9 @@ Repeated passages across sources are dropped automatically and counted;
 `--keep-duplicates` keeps them.
 
 `teacher resume NAME` carries on a lesson that was interrupted. A lesson writes
-itself down about ten times as it runs, so a crash costs minutes. If the
+itself down about ten times as it runs, so a crash costs minutes — and the
+weights, optimizer state, schedule and place in the data all come back, so the
+resumed lesson ends where an unbroken one would have. If the
 material changed since, resuming is refused — start the lesson again rather
 than arguing with it. Answer lessons are not resumable.
 

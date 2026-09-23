@@ -242,6 +242,51 @@ def load_training_state(checkpoint_path: Path | str) -> dict[str, Any]:
         raise CheckpointError(f"Checkpoint state is unreadable: {exc}") from exc
 
 
+def load_checkpoint_weights(checkpoint_path: Path | str, model: Any) -> str:
+    """Put a checkpoint's weights into a model that has already been built.
+
+    Resuming is the checkpoint's weights *and* its training state. A run that
+    restored only the state would carry on from step N with whatever weights
+    it was built with — the untrained ones — which is a shorter new run, not a
+    resumed one. Returns "adapter" or "full", for what was loaded.
+    """
+    from safetensors.torch import load_file
+
+    path = Path(checkpoint_path)
+    adapter = path / "adapter_model.safetensors"
+    if adapter.exists():
+        if not hasattr(model, "peft_config"):
+            raise CheckpointError(
+                "This checkpoint holds a LoRA adapter, and the run being resumed has "
+                "no adapter to load it into.",
+                hint="Resume with the method the checkpoint was trained with (LoRA).",
+            )
+        from peft import set_peft_model_state_dict
+
+        set_peft_model_state_dict(model, load_file(str(adapter)))
+        return "adapter"
+
+    full, pickled = path / "model.safetensors", path / "pytorch_model.bin"
+    if full.exists():
+        weights = load_file(str(full))
+    elif pickled.exists():
+        weights = torch.load(pickled, map_location="cpu", weights_only=True)
+    else:
+        raise CheckpointError(f"The checkpoint {path.name} has no weights to resume from.")
+
+    target = model.get_base_model() if hasattr(model, "get_base_model") else model
+    missing, unexpected = target.load_state_dict(weights, strict=False)
+    # A tied output layer is saved once, as the embeddings; that one may be absent.
+    missing = [key for key in missing if not key.endswith("lm_head.weight")]
+    if missing or unexpected:
+        raise CheckpointError(
+            f"The checkpoint's weights do not fit this model ({len(missing)} missing, "
+            f"{len(unexpected)} unexpected).",
+            hint="Resume with the model the checkpoint was trained from.",
+        )
+    return "full"
+
+
 def restore_training_state(
     state: dict[str, Any],
     *,

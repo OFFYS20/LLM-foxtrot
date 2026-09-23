@@ -16,6 +16,7 @@ from ai_studio.models.transformer import TransformerConfig, TransformerLM
 from ai_studio.training.checkpoint_manager import (
     delete_checkpoint,
     list_checkpoints,
+    load_checkpoint_weights,
     load_training_state,
     prune_checkpoints,
     restore_training_state,
@@ -122,6 +123,26 @@ def test_optimizer_and_scheduler_state_resume():
     assert resumed["dataset_meta"]["dataset_id"] == "ds-1"
     assert fresh_scheduler.get_last_lr() == scheduler.get_last_lr()
     assert fresh_optimizer.state_dict()["state"], "optimizer moments were not restored"
+
+
+def test_resuming_puts_the_checkpoints_weights_back():
+    """The state alone would carry on from step N with untrained weights."""
+    trained = build_model(seed=3)
+    record = save("exp-weights", trained, step=5)
+    fresh = build_model(seed=99)
+    assert not torch.equal(fresh.embed_tokens.weight, trained.embed_tokens.weight)
+
+    assert load_checkpoint_weights(record["path"], fresh) == "full"
+    for (name, ours), theirs in zip(fresh.state_dict().items(), trained.state_dict().values()):
+        assert torch.equal(ours, theirs), f"{name} was not restored"
+
+
+def test_weights_that_do_not_fit_are_refused_not_half_loaded():
+    record = save("exp-misfit", build_model(seed=3), step=5)
+    other = TransformerLM(TransformerConfig(vocab_size=64, hidden_size=32, num_layers=3,
+                                            num_heads=4, max_position_embeddings=32))
+    with pytest.raises(CheckpointError):
+        load_checkpoint_weights(record["path"], other)
 
 
 def test_resume_is_refused_when_state_is_missing(tmp_path):
