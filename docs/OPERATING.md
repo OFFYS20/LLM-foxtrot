@@ -23,15 +23,15 @@ and nothing else — no progress bars, no training logs, no prose — on every
 path, including failures:
 
 ```json
-{"ok": true, "command": "teach", "stage": "adapting well", "held_out_loss": 2.41,
- "rounds": 5, "reason": "it stopped improving"}
+{"ok": true, "command": "teach", "stage": "adapting well", "held_out_before": 2.71,
+ "held_out_loss": 2.41, "rounds": 5, "reason": "it stopped improving"}
 ```
 
 ```json
 {"ok": false, "command": "show", "error": "There is no model called 'bookbot'."}
 ```
 
-Read that object. Never invent a result you did not run. Twenty tests hold that
+Read that object. Never invent a result you did not run. Tests hold that
 contract in place, so if a command prints nothing, something is genuinely wrong.
 
 **Rules that matter:**
@@ -41,7 +41,10 @@ contract in place, so if a command prints nothing, something is genuinely wrong.
   one learn from nothing. The output is far better.
 - Use `--until best` rather than picking an epoch count.
 - Training takes minutes to hours. Say so before starting a long one.
-- If a lesson raises the held-out loss, say so and offer to roll it back.
+- A lesson reports `held_out_before` and `held_out_loss`: the same held-out
+  text, measured before the first step and on the weights it saved. If the
+  second is higher (`made_it_worse: true`), say so plainly and offer
+  `rollback`. Never report the lower number as the result.
 - Before trying something risky, `branch` the model and train the branch.
 - Only go to the web if they asked for it or agreed to it, and say which pages
   you took.
@@ -166,7 +169,22 @@ of one round (default 3), `--max-rounds N` caps them (default 20),
 
 **Speed** — `--batch auto` picks the largest batch that fits in memory and
 still leaves enough optimizer steps to learn from. Use it when a GPU is sitting
-at half load. `--rate` sets the learning rate (default 3e-4).
+at half load.
+
+**Learning rate** — leave `--rate` out. The default depends on the kind of
+lesson — from scratch, a pretrained base, or `--lora` — because one rate for
+all three was measured to make pretrained models *worse* on text they had not
+seen, and to forget what they knew. The measurements are in the "Learning
+rates" section of `teacher/README.md`. `--rate 5e-5` sets one by hand;
+`--rate auto` measures one on this model first (a range test: a few dozen
+steps at rising rates, then the weights are reloaded). The reply's
+`learning_rate` says what was used.
+
+**Rounds that make it worse are undone** — with `--until`, a round whose
+held-out loss is higher than the round before is rolled back, and the reply's
+`rounds_kept` says how many rounds are in the saved weights. Say so if it
+happened; it means the material has been learned as far as it can be at this
+rate.
 
 **More than one GPU** — `--gpus auto` spreads the lesson across every card:
 one process each, full copy of the model, different slice of the data,
@@ -258,6 +276,44 @@ converter cloned (`git clone https://github.com/ggerganov/llama.cpp` and
 error says why. Relay that — do not describe the model as exported.** Only
 models started from a pretrained base can be converted; a from-scratch one is
 refused and pointed at `teacher pack` instead.
+
+### Writing a model card
+
+```bash
+python -m teacher --json card NAME
+```
+
+Writes `README.md` into the model's folder — the file the Hugging Face Hub
+shows as the model's page. It is written from the model's own record: what it
+started from, every lesson still in its weights (a rolled-back lesson is
+listed apart, as undone), every source — web pages with their addresses and
+the date they were read, local files by name only — benchmark results taken on
+these weights beside the chance rate, and the base model's licence as its
+authors declare it. `export` writes one beside the GGUF as well.
+
+**The card chooses no licence for the model.** Tell them that decision is
+theirs, and that the material's terms and the base model's licence come with
+it. `--show` prints the card instead of writing it; `--out FILE` writes it
+elsewhere; a README that Teacher did not write is never overwritten.
+
+### Serving it to other programs
+
+```bash
+python -m teacher serve NAME
+```
+
+Starts a local API in OpenAI's format at `http://127.0.0.1:8008/v1`:
+`/v1/models`, `/v1/completions` and `/v1/chat/completions`, streaming
+included. Chat front-ends, editors and anything built on the `openai` package
+can use the model by pointing at that address with the model's name as the
+model. A model taught with `--answers` is asked in its template automatically.
+
+It runs until stopped — **start it in a terminal of its own and do not wait
+for it to return.** `--port N` to move it. `--api-key KEY` (or the
+`TEACHER_API_KEY` environment variable, which stays out of shell history)
+makes every request carry `Authorization: Bearer KEY`. It listens on this
+machine only; `--host 0.0.0.0` opens it to the network — only do that when
+they ask, and always with a key.
 
 ### Benchmarks
 

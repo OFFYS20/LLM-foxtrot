@@ -14,7 +14,7 @@ import sys
 import time
 from pathlib import Path
 
-from teacher import __version__, lessons, workspace
+from teacher import __version__, card, lessons, workspace
 from teacher.material import gather
 from teacher.workspace import TeacherError
 
@@ -224,9 +224,21 @@ def run_lesson(model, material, args) -> int:
     say("")
     say(f"  learned from:  {fmt_count(lesson['tokens'])} tokens over {lesson['epochs']:g} epoch(s)")
     say(f"  loss:          {lesson['final_loss']:.4f}" if lesson["final_loss"] is not None else "  loss: —")
-    if lesson["held_out_loss"] is not None:
-        say(f"  on held-out:   {lesson['held_out_loss']:.4f}  (perplexity {lesson['perplexity']:.1f})")
+    before, after = lesson.get("held_out_before"), lesson["held_out_loss"]
+    if after is not None:
+        start = f"{before:.4f} -> " if before is not None else ""
+        say(f"  on held-out:   {start}{after:.4f}  (perplexity {lesson['perplexity']:.1f})")
     say(f"  took:          {lesson['seconds']:.1f}s on {lesson['device']}")
+    worse = before is not None and after is not None and after > before
+    if worse:
+        say(style(f"\n  This lesson made it worse on text it did not train on "
+                  f"({before:.4f} -> {after:.4f}).", BOLD))
+        say(style(f"  Undo it:  python -m teacher rollback {model.name}", DIM))
+        say(style("  Then try fewer --epochs or a lower --rate.", DIM))
+    best = lesson.get("best_held_out")
+    if best is not None and after is not None and best < after - 0.01 and not worse:
+        say(style(f"  It was lowest part-way through ({best:.4f}) and rose after — "
+                  f"fewer --epochs would have stopped there.", DIM))
     if lesson.get("lora"):
         detail = lesson["lora"]
         say(f"  adapter:       rank {detail['rank']} on {', '.join(detail['target_modules'])}")
@@ -237,8 +249,9 @@ def run_lesson(model, material, args) -> int:
     report_progress(model, lesson, args)
     label, _note, share = lessons.judge(model, lesson["held_out_loss"])
     return emit(command="teach", model=model.name, stage=label, share=round(share, 4),
-                held_out_loss=lesson["held_out_loss"], epochs=lesson["epochs"],
-                seconds=lesson["seconds"], device=lesson["device"])
+                held_out_before=before, held_out_loss=after, made_it_worse=worse,
+                best_held_out=best, learning_rate=lesson["learning_rate"],
+                epochs=lesson["epochs"], seconds=lesson["seconds"], device=lesson["device"])
 
 
 def run_until(model, material, args) -> int:
@@ -275,9 +288,15 @@ def run_until(model, material, args) -> int:
         return emit(command="teach", model=model.name, rounds=0,
                     reason=summary["reason"], held_out_loss=summary["held_out_loss"])
 
-    first, last_loss = summary["first_loss"], summary["held_out_loss"]
+    first = summary.get("held_out_before")
+    if first is None:
+        first = summary["first_loss"]
+    last_loss = summary["held_out_loss"]
     say("")
-    say(f"  rounds:        {summary['rounds']} ({summary['epochs']:g} epochs total)")
+    kept = summary.get("rounds_kept", summary["rounds"])
+    say(f"  rounds:        {summary['rounds']}"
+        + (f", {kept} kept" if kept != summary["rounds"] else "")
+        + f" ({summary['epochs']:g} epochs in these weights)")
     if first is not None and last_loss is not None:
         say(f"  held-out loss: {first:.4f} -> {last_loss:.4f}")
     say(f"  took:          {fmt_duration(summary['seconds'])} on {summary['device']}")
@@ -292,9 +311,24 @@ def run_until(model, material, args) -> int:
     else:
         say(f"\n  Try it:  python -m teacher ask {model.name} \"...\"")
     return emit(command="teach", model=model.name, stage=label, share=round(share, 4),
-                rounds=summary["rounds"], epochs=summary["epochs"],
+                rounds=summary["rounds"], rounds_kept=kept, epochs=summary["epochs"],
+                held_out_before=summary.get("held_out_before"),
                 held_out_loss=summary["held_out_loss"], first_loss=summary["first_loss"],
                 reason=summary["reason"], seconds=summary["seconds"])
+
+
+def rate_value(text: str):
+    """--rate: a number, or "auto"."""
+    if text.strip().lower() == "auto":
+        return "auto"
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"'{text}' is not a rate — try 5e-5, or auto") from None
+    if not 0 < value < 1:
+        raise argparse.ArgumentTypeError(f"{value:g} is not a learning rate — they sit "
+                                         f"between about 1e-6 and 1e-2")
+    return value
 
 
 def fmt_duration(seconds: float) -> str:
@@ -465,7 +499,9 @@ THE COMMANDS
   {python} -m teacher --json teach NAME --from PATH --until best
       Teach it until it stops improving. Add --epochs N to set the size of one
       round, --max-rounds N to cap it, --max-minutes N to put a clock on it.
-      Returns stage, held_out_loss, rounds and why it stopped.
+      Returns stage, held_out_before, held_out_loss, rounds and why it
+      stopped; a round that made it worse is undone, and rounds_kept says so.
+      Leave --rate out: the default suits the kind of model, and was measured.
 
   {python} -m teacher --json ask NAME "some words"
       Get a continuation. Returns the reply and how fast it ran.
@@ -504,6 +540,22 @@ THE COMMANDS
       converter cloned; if it is missing, or it refuses the model, nothing is
       written and the error says why — tell me that rather than calling it
       exported. Only works for models started from a pretrained base.
+
+  {python} -m teacher --json card NAME
+      Write a model card (README.md in the model's folder) from the model's own
+      record: what it started from, every lesson still in its weights, every
+      source — web pages with their addresses and dates — benchmark results on
+      these weights beside the chance rate, and the base model's licence.
+      export writes one beside the GGUF as well. The card chooses no licence
+      for the model itself; tell me that decision is mine.
+
+  {python} -m teacher serve NAME
+      Answer over a local API in OpenAI's format at http://127.0.0.1:8008/v1,
+      so other programs — chat front-ends, editors, the openai package — can
+      use the model. It runs until stopped, so start it in a terminal of its
+      own and do not wait for it to return. --api-key KEY (or TEACHER_API_KEY)
+      makes it require a key. Only use --host 0.0.0.0 if I ask for other
+      machines to reach it, and then always with a key.
 
   {python} -m teacher --json test NAME arc --items 20
       Run a real benchmark suite. Returns accuracy, chance, beats_chance,
@@ -843,37 +895,6 @@ def cmd_resume(args) -> int:
                     reason="no interrupted lesson")
 
     say(f"{style(model.name + ' — ' + interrupted.describe(plan), BOLD)}")
-
-    sources = list(plan.get("sources") or [])
-    if not sources:
-        raise TeacherError(
-            "The interrupted lesson did not record where its material came from, "
-            "so it cannot be rebuilt. Teach it again from the start."
-        )
-
-    if plan.get("style"):
-        raise TeacherError(
-            "Answer lessons are not resumable yet — they are short enough that "
-            f"starting again costs little: teacher teach {model.name} "
-            f"--answers {' --answers '.join(sources)}"
-        )
-
-    say(style(f"  rebuilding the material from {len(sources)} source(s)", DIM))
-    material = gather(sources, dedupe=True)
-    if interrupted.fingerprint(material.text) != plan.get("fingerprint"):
-        raise TeacherError(
-            "The material has changed since that lesson started, so resuming would "
-            "train on a different text than the one it was part-way through.\n"
-            f"  Start it again:  teacher teach {model.name} "
-            f"--from {' --from '.join(sources)}"
-        )
-
-    # The weights as they were at the last save, not as they were before the run.
-    restored = model.rollback_to_interrupted()
-    say(style(f"  restored the weights saved at step {restored}", DIM))
-    say(style("  the data loader's place in the epoch is not restored, so a few "
-              "batches may be seen twice", DIM))
-
     last = {"line": ""}
 
     def on_log(message: str, level: str = "info") -> None:
@@ -884,16 +905,7 @@ def cmd_resume(args) -> int:
                 last["line"] = text
 
     say(f"\n{style('Carrying on', BOLD)}")
-    lesson = lessons.teach(
-        model, material,
-        epochs=float(plan.get("epochs", 3.0)),
-        batch_size=int(plan.get("batch_size", 8)),
-        learning_rate=float(plan.get("learning_rate", 3e-4)),
-        lora=bool(plan.get("lora")),
-        lora_rank=int(plan.get("lora_rank", 16)),
-        resume_from=int(plan.get("step", 0)),
-        on_log=on_log,
-    )
+    lesson = lessons.resume(model, on_log=on_log)
     label, note, share = lessons.judge(model, lesson["held_out_loss"])
     say(f"\n  {style(model.name + ': ' + label, BOLD)}")
     say(style(f"  {note}", DIM))
@@ -920,10 +932,88 @@ def cmd_export(args) -> int:
     )
 
     say(f"\n  {written['path']}  {fmt_bytes(written['bytes'])}")
+    entry, card_path, why_not = card.beside_export(model, written)
+    if card_path:
+        say(f"  {card_path}  its model card")
+    else:
+        say(style(f"  no model card beside it — {why_not}", DIM))
     say("")
     for line in export.advice(written):
         say(style("  " + line, DIM))
-    return emit(command="export", **written)
+    return emit(command="export", **written, sha256=entry["sha256"],
+                card=str(card_path) if card_path else None)
+
+
+def cmd_serve(args) -> int:
+    """Answer over a local API that OpenAI's clients already know how to talk to."""
+    import os
+
+    from teacher import serve
+
+    models = [workspace.get(name) for name in args.names]  # a wrong name fails here, clearly
+    key = args.api_key or os.environ.get("TEACHER_API_KEY") or None
+    local = args.host in ("127.0.0.1", "localhost", "::1")
+
+    def ready() -> None:
+        say(f"{style('Serving ' + ', '.join(model.name for model in models), BOLD)}")
+        say(f"  http://{args.host}:{args.port}/v1")
+        say(style("  point any OpenAI client at that address, with the model's name as "
+                  "the model", DIM))
+        if key:
+            say(style("  requests must carry: Authorization: Bearer <your key>", DIM))
+        if not local:
+            say(style("  listening beyond this machine" + (
+                "" if key else " with no key — anyone who can reach this port can use it"),
+                BOLD))
+        say(style("  Ctrl+C stops it", DIM))
+
+    say(style("  loading " + ", ".join(model.name for model in models), DIM))
+    serve.run([model.name for model in models], host=args.host, port=args.port,
+              api_key=key, on_ready=ready)
+    return emit(command="serve", models=[model.name for model in models], stopped=True)
+
+
+def cmd_card(args) -> int:
+    """Write a model card: what the model is, what it was taught, on whose terms."""
+    model = workspace.get(args.name)
+    known = card.facts(model, look_up_licence=not args.offline)
+    if args.show:
+        text = card.render(known)
+        say(text)
+        return emit(command="card", model=model.name, card=text, path=None,
+                    **_card_summary(known))
+
+    destination = Path(args.out).expanduser() if args.out else None
+    written = card.write(model, destination, known=known)
+    summary = _card_summary(known)
+    say(f"{style('Model card for ' + model.name, BOLD)}")
+    say(f"  {written}")
+    say(f"  lessons in these weights: {summary['lessons']}"
+        + (f"  ({summary['undone']} undone, listed apart)" if summary["undone"] else ""))
+    say(f"  material: {summary['sources']} source(s)"
+        + (f", {summary['web_pages']} of them web pages" if summary["web_pages"] else ""))
+    say(f"  benchmark results on these weights: {summary['exams']}")
+    if known["base_repo"]:
+        licence = known["base_license"] or "unknown — check the base model's page"
+        say(f"  base model licence: {licence}")
+    if not known["certain"] and known["lessons"]:
+        say(style("  some lessons predate weight tracking, so rollbacks from then "
+                  "cannot be told apart", DIM))
+    say(style("  no licence is chosen for the model itself — that is yours to decide", DIM))
+    return emit(command="card", model=model.name, path=str(written), **summary)
+
+
+def _card_summary(known: dict) -> dict:
+    return {
+        "lessons": len(known["lessons"]),
+        "undone": len(known["undone"]),
+        "certain": known["certain"],
+        "sources": len(known["sources"]),
+        "web_pages": sum(1 for source in known["sources"] if source["kind"] == "web"),
+        "exams": len(known["exams"]),
+        "base_repo": known["base_repo"],
+        "base_license": known["base_license"],
+    }
 
 
 def cmd_rollback(args) -> int:
@@ -995,7 +1085,10 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("--batch", default="8", metavar="N",
                          help="sequences per step (default 8). 'auto' picks the largest "
                               "that fits, which is usually what a half-idle GPU is missing")
-        sub.add_argument("--rate", type=float, default=3e-4, help="learning rate (default 3e-4)")
+        sub.add_argument("--rate", type=rate_value, default=None,
+                         help="learning rate: a number like 5e-5, or 'auto' to measure one on "
+                              "this model (default: measured per kind of lesson — see "
+                              "'Learning rates' in teacher/README.md)")
         sub.add_argument("--until", choices=list(lessons.TARGETS), metavar="STAGE",
                          help="keep teaching until it reaches this stage, or stops improving: "
                               + ", ".join(lessons.TARGETS))
@@ -1154,6 +1247,28 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--converter", metavar="PATH",
                         help="llama.cpp's convert_hf_to_gguf.py, if it is somewhere unusual")
     export.set_defaults(func=cmd_export)
+
+    serve_parser = subs.add_parser(
+        "serve", help="answer over a local API that speaks OpenAI's dialect")
+    serve_parser.add_argument("names", nargs="+", metavar="NAME", help="one or more models")
+    serve_parser.add_argument("--host", default="127.0.0.1",
+                              help="where to listen (default 127.0.0.1: this machine only)")
+    serve_parser.add_argument("--port", type=int, default=8008, help="default 8008")
+    serve_parser.add_argument("--api-key", metavar="KEY",
+                              help="require this key on every request "
+                                   "(or set TEACHER_API_KEY, which stays out of your history)")
+    serve_parser.set_defaults(func=cmd_serve)
+
+    card_parser = subs.add_parser(
+        "card", help="write a model card: what it is, what it was taught, on whose terms")
+    card_parser.add_argument("name")
+    card_parser.add_argument("-o", "--out", metavar="FILE",
+                             help="where to write it (default: README.md in the model's folder)")
+    card_parser.add_argument("--show", action="store_true",
+                             help="print the card instead of writing it")
+    card_parser.add_argument("--offline", action="store_true",
+                             help="do not look the base model's licence up online")
+    card_parser.set_defaults(func=cmd_card)
 
     rollback = subs.add_parser(
         "rollback", help="undo the last lesson, restoring the weights saved before it")

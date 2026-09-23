@@ -34,6 +34,8 @@ PARTS = (
      "The four programs, and how to start."),
     ("teacher/README.md", "Teacher",
      "Making, teaching, testing and exporting a model — the main program."),
+    ("docs/MANUAL.md", "The Teacher manual",
+     "How every part of Teacher works, and what to do when one of them breaks."),
     ("web_chat/README.md", "Bench",
      "Running a model in a browser, from a single HTML file."),
     ("ai_studio/README.md", "AI Studio",

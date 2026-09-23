@@ -238,8 +238,9 @@ def _sample(logits: Any, generated: Any, settings: GenerationSettings) -> Any:
     import torch.nn.functional as F
 
     if settings.repetition_penalty and settings.repetition_penalty != 1.0:
-        for token in set(generated[0].tolist()):
-            logits[0, token] /= settings.repetition_penalty
+        from ai_studio.models.transformer import penalise_repeats
+
+        logits = penalise_repeats(logits, generated, settings.repetition_penalty)
 
     if settings.temperature and settings.temperature > 0:
         logits = logits / max(settings.temperature, 1e-5)

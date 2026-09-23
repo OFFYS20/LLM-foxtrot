@@ -362,6 +362,21 @@ class TransformerBlock(nn.Module):
         return x, present
 
 
+def penalise_repeats(logits: torch.Tensor, generated: torch.Tensor, penalty: float) -> torch.Tensor:
+    """Make every token already in the sequence less likely, by ``penalty``.
+
+    A score is divided when it is positive and multiplied when it is negative —
+    dividing a negative score moves it towards zero, which makes the token
+    *more* likely, the opposite of a penalty. This is the rule Transformers and
+    the Bench page use.
+    """
+    seen = torch.unique(generated[0])
+    scores = logits[0, seen]
+    logits = logits.clone()
+    logits[0, seen] = torch.where(scores > 0, scores / penalty, scores * penalty)
+    return logits
+
+
 class TransformerLM(nn.Module):
     """Decoder-only causal language model."""
 
@@ -519,8 +534,7 @@ class TransformerLM(nn.Module):
             logits = outputs["logits"][:, -1, :].float()
 
             if repetition_penalty and repetition_penalty != 1.0:
-                for token in set(generated[0].tolist()):
-                    logits[0, token] /= repetition_penalty
+                logits = penalise_repeats(logits, generated, repetition_penalty)
 
             if temperature and temperature > 0:
                 logits = logits / max(temperature, 1e-5)

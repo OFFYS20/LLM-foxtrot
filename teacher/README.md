@@ -106,7 +106,9 @@ of your data.
 | `pack NAME -o DIR` | Copies `model.safetensors`, `config.json` and `tokenizer.json` |
 | `compare A B ...` | The same prompt through two or more models, side by side |
 | `test NAME SUITE` | Runs a real benchmark suite and says what the score means |
-| `export NAME` | Converts to GGUF for llama.cpp, Ollama or LM Studio |
+| `export NAME` | Converts to GGUF for llama.cpp, Ollama or LM Studio, with a model card beside it |
+| `card NAME` | Writes a model card: what it is, what it was taught, from where, on whose terms |
+| `serve NAME` | Answers over a local API in OpenAI's format, for other programs to use |
 | `resume NAME` | Carries on a lesson that was interrupted part-way through |
 | `checkpoints NAME` | The saved states this model can go back to or branch from |
 | `branch NAME NEW` | Copies a model, or one of its saved states, into a new model |
@@ -136,7 +138,8 @@ Add `--json` to any command for one machine-readable object instead of prose.
 | `new`, `teach` | `--eval-from PATH` | Measure the held-out loss on separate text, not the tail of your own |
 | `new`, `teach` | `--keep-duplicates` | Keep passages that appear in more than one source |
 | `new`, `teach` | `--web`, `--web-results` | Gather material from the web first, and how many pages to read |
-| `new`, `teach` | `--epochs`, `--batch`, `--rate` | Passes, sequences per step (`auto` to fill the hardware), learning rate |
+| `new`, `teach` | `--epochs`, `--batch` | Passes, and sequences per step (`auto` to fill the hardware) |
+| `new`, `teach` | `--rate` | Learning rate — leave it out for the measured default, or `auto` to measure one |
 | `new`, `teach` | `--until`, `--max-rounds`, `--max-minutes` | Teach in rounds until done, and the limits on that |
 | `new`, `teach` | `--gpus N` | Spread the lesson across N GPUs, or `auto` for all of them |
 | `new`, `teach` | `--device` | `auto`, `cpu` or `cuda` |
@@ -150,6 +153,8 @@ Add `--json` to any command for one machine-readable object instead of prose.
 | `ask` | `--seed` | Repeat an exact answer |
 | `web` | `--results`, `--url`, `--list`, `-o` | How many pages, extra addresses, look without downloading, where to keep them |
 | `export` | `-o`, `--precision`, `--converter` | Where to write it, how much of each weight to keep, and where llama.cpp is |
+| `card` | `-o`, `--show`, `--offline` | Where to write it, print it instead, and whether to look the base model's licence up |
+| `serve` | `--host`, `--port`, `--api-key` | Where it listens (this machine only, by default) and the key every request must carry |
 | `pack` | `-o`, `--out` | Where to copy the files |
 | `forget` | `--yes` | Confirm the deletion |
 | `ui` | `--port`, `--host`, `--share`, `--no-browser` | Where the window listens and whether it opens itself |
@@ -378,10 +383,39 @@ only for a dataset that reads from disk.
 
 ### Training options
 
-`--epochs` (default 3), `--batch` (default 8) and `--rate` (default 3e-4) are on
-both `new` and `teach`. Before any lesson starts, Teacher estimates the memory it
-needs and refuses the run if it will not fit, with suggestions — it will not
-start something that is likely to crash the machine.
+`--epochs` (default 3), `--batch` (default 8) and `--rate` are on both `new` and
+`teach`. Before any lesson starts, Teacher estimates the memory it needs and
+refuses the run if it will not fit, with suggestions — it will not start
+something that is likely to crash the machine.
+
+`--rate` is best left out: the default depends on the kind of lesson, and was
+measured rather than guessed — see [Learning rates](#learning-rates) below.
+
+### Learning rates
+
+One rate for every kind of lesson was wrong. Teaching a pretrained model at
+the rate that suits one built from noise made it **worse** on text it had not
+seen, and made it forget what it knew. Measured on the `small` base
+(SmolLM2-135M), three epochs of five Wikipedia articles, the same seed and
+data every time, only the rate changed — each number on the weights the
+lesson saved:
+
+| Rate | Held-out tail | Unseen article, same subject | Unrelated text |
+|---|---|---|---|
+| before any lesson | 2.7079 | 2.7181 | 2.1860 |
+| 3e-4 (the old default) | 2.7152 (worse) | 2.7912 (worse) | 2.3443 (forgot) |
+| 1e-4 | 2.5657 | 2.6388 | 2.1834 |
+| **5e-5** | **2.5567** | **2.6205** | **2.1519** |
+
+So a pretrained model is now taught at **5e-5** unless you say otherwise.
+LoRA and models built from scratch keep 3e-4. `--rate 1e-4` sets one by hand;
+`--rate auto` measures one on your model first with a range test — a few
+dozen steps at rates climbing from far too small to far too large — and
+reloads the weights before the lesson proper. Every lesson records the rate
+it used and where it came from.
+
+The whole method, and what the range test does, is in the
+[manual](../docs/MANUAL.md#part-11--learning-rates).
 
 ### Training until it is actually done
 
@@ -422,6 +456,12 @@ past the target is left alone rather than trained pointlessly.
 Every round saves the model, so Ctrl-C at any point leaves the last completed
 round on disk. The whole run is written to the history as one entry, keeping each
 round's loss inside it.
+
+**A round that makes it worse is undone.** If a round ends with a higher held-out
+loss than the round before it — or, for the first round, than the model had
+before it started — its weights are rolled back, and the run stops and says so.
+`rounds kept` in the output is how many rounds are in the saved weights. What is
+left on disk is the best the run reached, not merely the last thing it did.
 
 ---
 
@@ -562,12 +602,28 @@ tools, which are useful to a capable model you have imported — see
    across line breaks). Pass `--raw` to skip cleaning.
 2. Tokenizes it, holding back the last 5% as text the model never trains on, so
    the reported loss is measured on writing it has not seen.
-3. Runs a real training loop — forward, backward, gradient clipping, a cosine
-   schedule with warmup.
-4. Copies the previous weights into `checkpoints/` **before** overwriting them,
+3. Measures the held-out loss **before the first step** — where this lesson
+   starts from.
+4. Runs a real training loop — forward, backward, gradient clipping, a cosine
+   schedule with warmup — writing itself down about ten times on the way, so a
+   crash can be resumed.
+5. Measures the held-out loss again, **on the weights it is about to save**.
+   That pair — before and after — is what it reports:
+   `on held-out: 2.7079 -> 2.5567`. If the second number is higher, it says the
+   lesson made the model worse and how to undo it.
+6. Copies the previous weights into `checkpoints/` **before** overwriting them,
    so a disappointing lesson can be undone with `teacher rollback` or the window's
    *Roll back* button.
-5. Appends what happened to `history.json`. Nothing already recorded is rewritten.
+7. Appends what happened to `history.json` — including which weights the lesson
+   started from and which it saved, which is how a model card can later tell a
+   lesson that stuck from one that was rolled back. Nothing already recorded is
+   rewritten.
+
+Earlier versions reported the *lowest* held-out loss seen part-way through the
+lesson, while saving the weights from the end. When a lesson went on too long,
+those were different models, and the number described the one that was thrown
+away. It now reports the model on disk; the lowest point is kept alongside
+(`best_held_out`) and mentioned when it was clearly lower.
 
 ```
 ~/teacher-models/bookbot/
@@ -575,7 +631,9 @@ tools, which are useful to a capable model you have imported — see
 ├── config.json           the architecture
 ├── tokenizer.json        the tokenizer
 ├── history.json          every lesson, with its sources and losses
-└── checkpoints/          the two previous states, kept in case you want them back
+├── README.md             its model card, once you have run `teacher card`
+├── checkpoints/          the two previous states, kept in case you want them back
+└── .interrupted/         only while a lesson is unfinished — what `resume` needs
 ```
 
 The first three files are all Bench needs, which is why `pack` is a copy rather
@@ -708,10 +766,16 @@ python -m teacher resume bookbot
 
 ```
 bookbot — interrupted at step 312/1040 on 2026-09-22 14:56, 40 epoch(s) over 207,173 characters
-  rebuilding the material from 1 source(s)
-  restored the weights saved at step 312
-  the data loader's place in the epoch is not restored, so a few batches may be seen twice
+  restored the weights saved at step 312, with the optimizer's state and the place in the schedule and the data
 ```
+
+Everything comes back: the weights, the optimizer's momentum, the place in the
+learning-rate schedule and the place in the data. For a model without dropout
+an interrupted-and-resumed lesson ends on the same weights as one that ran
+straight through — a test checks that to a millionth. (An earlier version
+restored only the weights and the step count: the momentum started from
+nothing, the schedule went back to its warm-up, and the data order started
+again from the first batch.)
 
 The record is deleted when a lesson finishes, so a record that is there means a
 lesson that is not. The material is fingerprinted when the run starts and
@@ -781,6 +845,7 @@ python -m teacher export bookbot --precision f16
 
 ```
 /home/you/bookbot-f16.gguf  258.3MB
+/home/you/bookbot-f16.md  its model card
 
 llama.cpp:  llama-cli -m /home/you/bookbot-f16.gguf -p "your prompt"
 Ollama:     printf 'FROM /home/you/bookbot-f16.gguf\n' > Modelfile && ollama create bookbot -f Modelfile
@@ -811,6 +876,115 @@ not run from here.
 **Only for models started from a pretrained base.** llama.cpp implements the
 architectures it knows; a model built from scratch here is not one of them, and
 `export` refuses it and points at `teacher pack` and the Bench page instead.
+
+Every export writes the model's card beside the file (`bookbot-f16.md`), with
+the file's size and SHA-256 added, and notes the export in the model's record.
+A file of that name that Teacher did not write is left alone.
+
+### What it is, and where it came from: model cards
+
+```bash
+python -m teacher card bookbot
+```
+
+```
+Model card for bookbot
+  /home/you/teacher-models/bookbot/README.md
+  lessons in these weights: 2  (1 undone, listed apart)
+  material: 7 source(s), 6 of them web pages
+  benchmark results on these weights: 1
+  base model licence: apache-2.0
+  no licence is chosen for the model itself — that is yours to decide
+```
+
+A model card is what someone reads before trusting a model they did not make.
+Teacher writes one from the model's own record — `README.md` in its folder,
+which is the file the Hugging Face Hub shows as a model's page — and nothing
+in it is estimated:
+
+- **What it is**: parameters (counted from the weights file), architecture,
+  vocabulary, context, and what it started from.
+- **What it was taught**: every lesson still in these weights, with its date,
+  kind, amount, epochs, steps, learning rate, held-out loss and what that was
+  measured on. A lesson that was rolled back is still in the record — it
+  happened — but it is not in the weights, so the card lists it apart, as
+  undone. Every lesson notes the weights it started from and the weights it
+  saved, and the card follows those links back from the weights on disk.
+- **Where the material came from**: web pages by title, address and the date
+  they were read; local files by name only. Paths stay on your machine — a
+  card is for sharing, and your folder layout is not.
+- **How it scores**: benchmark results taken on *these* weights, each beside
+  the score guessing would get and whether the difference means anything.
+  A result taken before the last lesson describes a model that no longer
+  exists, and is left out.
+- **Licence**: Teacher's licence covers Teacher, not the weights and not the
+  material. The card reports the base model's licence as its authors declare
+  it on the Hub (looked up once, `--offline` to skip), says web pages keep
+  their authors' terms, and **chooses no licence for the model** — the
+  `license:` field is left empty for the person who knows what the material
+  was.
+
+`--show` prints it instead of writing it; `-o FILE` writes it elsewhere. A
+`README.md` that Teacher did not write is never overwritten.
+
+### Letting other programs use it: `teacher serve`
+
+```bash
+python -m teacher serve bookbot
+```
+
+```
+Serving bookbot
+  http://127.0.0.1:8008/v1
+  point any OpenAI client at that address, with the model's name as the model
+  Ctrl+C stops it
+```
+
+A local API in OpenAI's format, so anything written for OpenAI's API — chat
+front-ends, editor plugins, scripts using the `openai` package — can use your
+model instead:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8008/v1", api_key="unused")
+reply = client.chat.completions.create(
+    model="bookbot", messages=[{"role": "user", "content": "Who kept the light?"}])
+print(reply.choices[0].message.content)
+```
+
+| Route | What it does |
+|---|---|
+| `GET /v1/models` | The models being served |
+| `POST /v1/completions` | Continues a prompt |
+| `POST /v1/chat/completions` | Replies to a conversation |
+| `GET /health` | Whether it is up |
+
+Both generation routes stream with `"stream": true`, and take `max_tokens`
+(capped at 2,048 and at what the context has room for), `temperature`,
+`top_p`, `stop` (up to four), `seed` and `repetition_penalty`. Tested against
+the official `openai` Python package, streaming included.
+
+- **The template is applied for you.** A model taught with `--answers` is asked
+  in the form it was taught, and each earlier turn of a conversation is laid
+  out the same way. A model taught only text gets the conversation as a plain
+  `User:` / `Assistant:` transcript to continue — it will continue it, but it
+  was never taught to reply; `--answers` is what teaches that.
+- **One reply at a time.** Two at once would each run at half the speed in
+  twice the memory, so requests wait their turn.
+- **It keeps up with lessons.** Teach the model in another terminal and the
+  next request uses the new weights — no restart.
+- **It listens on this machine only.** `--host 0.0.0.0` opens it to your
+  network; do that only with `--api-key KEY` (or `TEACHER_API_KEY`, which
+  keeps the key out of your shell history), and every request must then carry
+  `Authorization: Bearer KEY`.
+- **Errors come back in OpenAI's shape**: a model name that is not being
+  served is a 404 naming the ones that are; a prompt longer than the model's
+  context is a 400 with `context_length_exceeded`.
+
+Several models at once: `teacher serve bookbot seabot` — the request's
+`model` picks between them. The window's **Keep** tab has the same thing with
+a start and a stop button.
 
 ### Is it any good? Benchmarks
 
@@ -876,7 +1050,12 @@ is.
 the prompt (the default is whatever the suite specifies), and `--offline`
 skips the download and uses whatever is already here.
 
-Generation is greedy — temperature zero — so a run repeats exactly.
+Generation is greedy — temperature zero — so a run repeats exactly. The model
+is loaded once for the whole run rather than once per question.
+
+Each result is kept in the model's record — the score, not every answer — tied
+to the weights it was taken on, so `teacher card` can show it for as long as
+those weights are the ones on disk.
 
 ### Saved states: going back, and branching off
 
@@ -997,6 +1176,18 @@ fine-tuning screen and an existing base model rather than training from scratch.
 An older copy of Teacher on Gradio 6. Gradio 6 removed several things Gradio 5
 required, so the window would not open at all. Update the repository — Teacher
 now works on both. There is nothing to install or downgrade.
+
+**`ValueError: Slider minimum must be less than maximum.`**
+The same story, one step later: the GPU slider ran from 1 to the number of GPUs,
+and on a machine with one GPU or none that is 1 to 1, which Gradio 6 refuses —
+so the window would not open. Update the repository; with fewer than two GPUs
+the window now shows the count instead of a slider.
+
+**"This lesson made it worse on text it did not train on"**
+The held-out loss after the lesson is higher than before it. Undo it with
+`teacher rollback NAME`, then teach again with fewer `--epochs` or a lower
+`--rate`. If you set `--rate` yourself, try leaving it out — see
+[Learning rates](#learning-rates).
 
 
 **"Only N characters of material — too little to learn anything"**

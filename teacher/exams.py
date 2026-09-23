@@ -86,11 +86,14 @@ def sit(
     few_shot: int | None = None,
     allow_download: bool = True,
     on_item=None,
+    record: bool = True,
 ) -> dict:
     """Run one suite against one model and report what happened.
 
     Nothing here is estimated. Every item is generated and graded, and the
-    count of what was right is the count of what was right.
+    count of what was right is the count of what was right. The result goes
+    into the model's record, tied to the weights it was taken on, so a model
+    card can show it — and can leave it out once those weights are gone.
     """
     try:
         items, info = load_suite(suite, limit=limit + (few_shot or 0), allow_download=allow_download)
@@ -135,7 +138,7 @@ def sit(
 
     chance = chance_rate(questions)
     accuracy = correct / len(questions)
-    return {
+    outcome = {
         "model": model.name,
         "suite": info.key,
         "label": info.label,
@@ -152,6 +155,18 @@ def sit(
         "seconds": round(time.time() - started, 1),
         "results": results,
     }
+    if record:
+        keep(model, outcome)
+    return outcome
+
+
+def keep(model: Model, outcome: dict) -> dict:
+    """Write a result into the model's record — the score, not every answer."""
+    entry = {key: value for key, value in outcome.items() if key not in ("results", "model")}
+    entry["at"] = time.time()
+    entry["weights"] = model.weights_stamp()
+    model.note(exams=[*model.history().get("exams", []), entry])
+    return entry
 
 
 def verdict(outcome: dict) -> str:

@@ -168,7 +168,12 @@ def _worker(rank: int, job: Job, results) -> None:  # pragma: no cover - runs in
             on_log=(lambda message, level="info": results.put(
                 {"rank": rank, "log": message, "level": level})) if rank == 0 else None,
         )
+        # Every process takes part in an evaluation, because the held-out
+        # loss is pooled across them. Before and after, on the same text: the
+        # difference is what the lesson did.
+        before = trainer.evaluate()
         outcome = trainer.train()
+        after = trainer.evaluate() if outcome.status == "completed" else None
 
         if rank == 0:
             saved = trainer.model
@@ -182,6 +187,8 @@ def _worker(rank: int, job: Job, results) -> None:  # pragma: no cover - runs in
                     "steps": outcome.steps,
                     "final_train_loss": outcome.final_train_loss,
                     "best_val_loss": outcome.best_val_loss,
+                    "held_out_before": before,
+                    "held_out_after": after,
                     "duration_seconds": outcome.duration_seconds,
                     "error": outcome.error,
                     "lora": {k: v for k, v in (lora_stats or {}).items() if k != "network"},

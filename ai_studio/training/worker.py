@@ -158,9 +158,9 @@ class TrainingManager:
                     hint="; ".join(check.suggestions),
                 )
 
-            start_step = 0
+            start_step, saved = 0, None
             if resume_from:
-                start_step = self._resume(resume_from, model, console)
+                start_step, saved = self._resume(resume_from, model, console)
 
             db.update("experiments", experiment_id, {"status": "running"})
 
@@ -240,6 +240,11 @@ class TrainingManager:
                 on_log=console,
                 on_checkpoint=on_checkpoint,
                 start_step=start_step,
+                # The optimizer does not exist until training starts, so the
+                # saved state goes in then; without it a resumed run's
+                # momentum starts from nothing.
+                restore_state=(lambda optimizer, _schedule: restore_training_state(
+                    saved, optimizer=optimizer, restore_rng=False)) if saved else None,
             )
 
             result = trainer.train()
@@ -347,7 +352,8 @@ class TrainingManager:
         )
         return model, tokenizer, train_ds, eval_ds, device, peft_stats
 
-    def _resume(self, checkpoint_id_or_path: str, model: Any, console: Any) -> int:
+    def _resume(self, checkpoint_id_or_path: str, model: Any, console: Any) -> tuple[int, dict]:
+        """The step to carry on from, and the saved state to restore when training starts."""
         db = get_db()
         record = db.get("checkpoints", checkpoint_id_or_path)
         path = Path(record["path"]) if record else Path(checkpoint_id_or_path)
@@ -357,7 +363,7 @@ class TrainingManager:
         state = load_training_state(path)
         restored = restore_training_state(state)
         console(f"[RESUME] continuing from step {restored['step']} ({path.name})")
-        return restored["step"]
+        return restored["step"], state
 
     def _flush(self, pending: list[dict[str, Any]]) -> None:
         if not pending:

@@ -68,6 +68,23 @@ class Model:
         history.update(fields)
         self.history_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
 
+    def start_record(self, **facts) -> None:
+        """Begin the record of weights just made from nothing, or adopted.
+
+        A folder that held another model keeps nothing of it but its record,
+        under "replaced" — the new weights never had those lessons, so listing
+        them as this model's would be wrong, and dropping them would lose them.
+        """
+        previous = self.history()
+        earlier = previous.pop("replaced", [])
+        if previous.get("lessons") or previous.get("base_repo"):
+            earlier = [*earlier, previous]
+        record = {"name": self.name, "created_at": time.time(), "lessons": [], **facts}
+        if earlier:
+            record["replaced"] = earlier
+        self.path.mkdir(parents=True, exist_ok=True)
+        self.history_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+
     def record(self, entry: dict) -> None:
         """Append one lesson to the model's record. Never rewrites earlier ones."""
         history = self.history()
@@ -77,6 +94,21 @@ class Model:
             history["created_at"] = time.time()
         history["lessons"].append(entry)
         self.history_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
+
+    def weights_stamp(self) -> str | None:
+        """Which weights these are, told from the weights file's size and time.
+
+        Reading two numbers is instant where hashing gigabytes is not. It is
+        enough because every copy Teacher makes — a saved state, a rollback, a
+        branch — keeps the file's time, so the same weights carry the same stamp
+        wherever they are put back. That is what lets the record say which
+        lesson made the weights on disk now, and which lessons a rollback undid.
+        """
+        try:
+            info = (self.path / "model.safetensors").stat()
+        except OSError:
+            return None
+        return f"{info.st_size}-{info.st_mtime_ns}"
 
     def taught_characters(self) -> int:
         return sum(int(lesson.get("characters", 0)) for lesson in self.history().get("lessons", []))
@@ -159,6 +191,21 @@ class Model:
             raise TeacherError(f"The saved state {chosen.name} is empty.")
         for item in restored:
             shutil.copy2(item, self.path / item.name)
+
+        # The lessons stay listed, and the rollback is listed beside them, so
+        # the record says both what was taught and what was taken back.
+        history = self.history()
+        stamp = self.weights_stamp()
+        self.note(
+            rollbacks=[*history.get("rollbacks", []), {
+                "at": time.time(),
+                "restored": chosen.name,
+                "weights": stamp,
+            }],
+            # Rolled back past the lesson that taught it to answer, the weights
+            # no longer know the template — asking in it would read oddly.
+            answer_style=style_in_effect(history, stamp),
+        )
         return chosen.name
 
     def rollback_to_interrupted(self) -> int:
@@ -262,10 +309,88 @@ def branch(source: Model, new_name: str, *, at: str | None = None) -> Model:
         branched_at=state.name if state else "its current weights",
         branched_on=time.time(),
         base_repo=was.get("base_repo"),
+        base_license=was.get("base_license"),
         base_loss=was.get("base_loss"),
+        origin_weights=was.get("origin_weights"),
+        # Weights taught to answer still expect the template they were taught
+        # with; without it a question reads as text to continue.
+        answer_style=style_in_effect(was, target.weights_stamp()),
         branched_from_history=was.get("lessons", []),
     )
     return target
+
+
+def lineage(history: dict, stamp: str | None) -> dict:
+    """Which recorded lessons the weights stamped ``stamp`` actually carry.
+
+    Each lesson notes the weights it started from and the weights it saved, so
+    the lessons behind any set of weights can be walked backwards, one link at
+    a time, to where the model was made. A lesson not on that path was undone
+    by a rollback — or taught to a branch's source after the branch was taken.
+
+    Returns the lessons in effect (oldest first), the recorded lessons that
+    are not, and whether the answer is certain. Lessons written down before
+    Teacher noted weights cannot be placed: they are counted as in effect, and
+    the answer is no longer certain.
+    """
+    inherited = [dict(lesson, inherited=True) for lesson in history.get("branched_from_history", [])]
+    recorded = inherited + list(history.get("lessons", []))
+    if stamp is None:
+        return {"in_effect": recorded, "undone": [], "certain": not recorded}
+
+    chain: list[int] = []
+    partly: dict[int, int] = {}
+    wanted, below = stamp, len(recorded)
+    while True:
+        # The newest lesson, older than the last one found, that saved these
+        # weights — at its end, or, for a lesson taught in rounds, after one of
+        # its rounds (a rollback into the middle of it lands there).
+        found = next((index for index in range(below - 1, -1, -1)
+                      if recorded[index].get("weights") == wanted
+                      or wanted in (recorded[index].get("round_weights") or [])), None)
+        if found is None:
+            break
+        lesson = recorded[found]
+        if lesson.get("weights") != wanted:
+            partly[found] = (lesson.get("round_weights") or []).index(wanted) + 1
+        # A lesson that ended where it began — every round of it undone —
+        # changed nothing, so it is not counted as carried.
+        if lesson.get("weights_before") != wanted:
+            chain.append(found)
+        wanted, below = lesson.get("weights_before"), found
+
+    # The walk has to end where the model began. Ending anywhere else means
+    # the weights were changed by something the record does not describe.
+    origin = history.get("origin_weights")
+    certain = wanted is not None and (origin is None or wanted == origin)
+    kept = set(chain)
+
+    unplaced = [index for index, lesson in enumerate(recorded) if "weights" not in lesson]
+    if unplaced:
+        # Older records do not say which weights they made. The lessons before
+        # the walk's first are what it started from; whether a rollback undid
+        # any of them was never written down.
+        first = min(chain) if chain else len(recorded)
+        kept |= {index for index in unplaced if index < first}
+        certain = False
+
+    return {
+        "in_effect": [dict(recorded[index], rounds_in_effect=partly[index]) if index in partly
+                      else recorded[index] for index in sorted(kept)],
+        "undone": [lesson for index, lesson in enumerate(recorded) if index not in kept],
+        "certain": certain,
+    }
+
+
+def style_in_effect(history: dict, stamp: str | None) -> str | None:
+    """The answer template the weights with ``stamp`` were last taught with."""
+    carried = lineage(history, stamp)
+    if not carried["certain"]:
+        return history.get("answer_style")
+    for lesson in reversed(carried["in_effect"]):
+        if lesson.get("style") not in (None, "text"):
+            return lesson["style"]
+    return None
 
 
 def every() -> list[Model]:

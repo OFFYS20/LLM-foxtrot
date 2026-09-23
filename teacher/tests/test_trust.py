@@ -160,3 +160,50 @@ def test_the_last_step_does_not_write_a_record_that_is_about_to_be_deleted(monke
 
     source = inspect.getsource(lessons.teach)
     assert 'step >= held["total"]' in source, "the final-step save must be skipped"
+
+
+def test_a_resumed_lesson_ends_where_an_unbroken_one_would(tmp_path, monkeypatch):
+    """Weights, optimizer momentum, the place in the schedule and the place in
+    the data all come back — so the interruption leaves no trace in the result."""
+    import torch
+    from safetensors.torch import load_file
+
+    from teacher import lessons
+
+    folder = tmp_path / "material"
+    folder.mkdir()
+    (folder / "text.txt").write_text(
+        " ".join(f"the {a} {b} the {c} ." for a in ("keeper", "lamp", "gull", "ship")
+                 for b in ("saw", "lit", "passed") for c in ("rock", "tower", "sea")) * 60,
+        encoding="utf-8")
+    material = gather([str(folder)])
+
+    unbroken = workspace.get("unbroken", must_exist=False)
+    lessons.create(unbroken, material, "tiny", context=64)
+    broken = workspace.branch(unbroken, "broken")
+
+    lessons.teach(unbroken, material, epochs=2.0, batch_size=8, learning_rate=1e-3)
+
+    # The same lesson again on an identical copy, stopped just after its first
+    # record is written — as a power cut would stop it.
+    write = interrupted.write
+
+    def write_then_stop(*args, **kwargs):
+        write(*args, **kwargs)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(interrupted, "write", write_then_stop)
+    with pytest.raises(KeyboardInterrupt):
+        lessons.teach(broken, material, epochs=2.0, batch_size=8, learning_rate=1e-3)
+    monkeypatch.setattr(interrupted, "write", write)
+    stopped_at = interrupted.waiting(broken)["step"]
+    assert stopped_at > 0, "it was stopped part-way, after a record was written"
+
+    lesson = lessons.resume(broken)
+    assert lesson["resumed_from_step"] == stopped_at
+
+    ours = load_file(str(broken.path / "model.safetensors"))
+    theirs = load_file(str(unbroken.path / "model.safetensors"))
+    assert ours.keys() == theirs.keys()
+    for key in ours:
+        assert torch.allclose(ours[key], theirs[key], atol=1e-6), f"{key} differs after resuming"

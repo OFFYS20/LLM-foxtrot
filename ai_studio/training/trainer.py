@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, RandomSampler
 
 from ai_studio.core import logging as log
 from ai_studio.core.errors import OutOfMemoryError, TrainingError
@@ -149,6 +149,7 @@ class Trainer:
         on_log: Callable[[str, str], None] | None = None,
         on_checkpoint: Callable[[int, float, float | None, bool], None] | None = None,
         start_step: int = 0,
+        restore_state: Callable[[Any, Any], None] | None = None,
         rank: int = 0,
         world_size: int = 1,
     ) -> None:
@@ -162,6 +163,9 @@ class Trainer:
         self.on_log = on_log
         self.on_checkpoint = on_checkpoint
         self.start_step = start_step
+        #: Called with the optimizer and the schedule once they exist, to load a
+        #: resumed run's saved state into them.
+        self.restore_state = restore_state
         #: Which process this is, of how many. One process is the ordinary case.
         self.rank = int(rank)
         self.world_size = max(1, int(world_size))
@@ -302,11 +306,20 @@ class Trainer:
                 shuffle=True, seed=self.config.seed, drop_last=False,
             )
 
+        distributed = sampler is not None
+        if not distributed:
+            # The shuffle has a generator of its own, given to the sampler alone,
+            # so the order of every epoch follows from the seed and nothing else.
+            # Shared, it would also depend on everything else that drew random
+            # numbers on the way — the DataLoader draws one itself every epoch —
+            # and a resumed run could not find its place in the data again.
+            shuffle = torch.Generator()
+            shuffle.manual_seed(self.config.seed)
+            sampler = RandomSampler(self.train_dataset, generator=shuffle)
         train_loader = DataLoader(
             self.train_dataset,
             batch_size=self.config.batch_size,
             sampler=sampler,
-            shuffle=sampler is None,
             collate_fn=collate,
             # The dataset is one tensor in memory and a batch is a slice of it,
             # so worker processes would add spawn and IPC cost to a memcpy.
@@ -329,6 +342,17 @@ class Trainer:
 
         self.optimizer = self.build_optimizer()
         self.scheduler = self.build_scheduler(self.optimizer, total_steps)
+        if self.restore_state:
+            # The optimizer's memory of recent gradients: without it a resumed
+            # run starts its momentum from nothing, as if it were a new run.
+            self.restore_state(self.optimizer, self.scheduler)
+        if self.start_step:
+            # Part-way along the schedule, not back at its warm-up.
+            self.scheduler.last_epoch = self.start_step
+            for group, base, factor in zip(self.optimizer.param_groups,
+                                           self.scheduler.base_lrs, self.scheduler.lr_lambdas):
+                group["lr"] = base * factor(self.start_step)
+            self.scheduler._last_lr = [group["lr"] for group in self.optimizer.param_groups]
 
         # Build the optimizer over the real parameters, then wrap: DDP averages
         # the gradients across processes at each backward pass.
@@ -357,6 +381,15 @@ class Trainer:
         step = self.start_step
         epoch = 0.0
         accumulated = 0
+        # Where in the data a resumed run picks up: the epochs already done are
+        # drawn and set aside so the shuffle reaches the same order, then the
+        # batches of the current epoch already trained on are passed over.
+        done_epochs, skip_batches = divmod(
+            self.start_step * self.config.gradient_accumulation_steps, len(train_loader))
+        if not distributed:
+            for _ in range(done_epochs):
+                for _index in sampler:
+                    pass
         # Kept on the device. Reading a GPU tensor into Python makes the CPU wait
         # for the GPU to finish, and doing that every micro-batch stops the CPU
         # queueing the next step's kernels while the GPU works on this one.
@@ -376,17 +409,20 @@ class Trainer:
                 if self.config.max_steps <= 0
                 else math.ceil(total_steps * self.config.gradient_accumulation_steps / len(train_loader))
             )
-            epoch_index = 0
+            epoch_index = done_epochs
 
             while step < total_steps and not self.control.stopping:
                 epoch_index += 1
-                if sampler is not None:
+                if distributed:
                     # Without this the shuffle is identical every epoch.
                     sampler.set_epoch(epoch_index)
                 if self.config.max_steps <= 0 and epoch_index > math.ceil(self.config.epochs):
                     break
 
                 for batch in train_loader:
+                    if skip_batches:
+                        skip_batches -= 1
+                        continue
                     if self.control.stopping:
                         status = "stopped"
                         break
@@ -570,6 +606,9 @@ class Trainer:
             num_workers=0,
         )
         limit = max_batches if max_batches is not None else self.config.eval_max_batches
+        # Also called before train(), which is where the model would otherwise
+        # first be put on its device.
+        self.model.to(self.device)
         self.model.eval()
         dtype, autocast_enabled = self._resolve_dtype()
 

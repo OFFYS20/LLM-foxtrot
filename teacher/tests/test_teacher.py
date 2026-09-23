@@ -675,12 +675,21 @@ def test_losses_from_different_vocabularies_are_not_put_side_by_side():
     assert same is False and comparable is False
 
 
-def test_losses_line_up_when_the_vocabulary_matches():
+def test_losses_line_up_when_the_vocabulary_and_the_text_match():
     same, comparable = lessons.comparability([
-        {"vocab_size": 4096, "held_out_loss": 2.1},
-        {"vocab_size": 4096, "held_out_loss": 1.8},
+        {"vocab_size": 4096, "held_out_loss": 2.1, "measured_on": ["books/a.txt"]},
+        {"vocab_size": 4096, "held_out_loss": 1.8, "measured_on": ["books/a.txt"]},
     ])
     assert same is True and comparable is True
+
+
+def test_losses_on_different_text_do_not_line_up_even_in_one_vocabulary():
+    """A loss on one text says nothing about a loss on another."""
+    same, comparable = lessons.comparability([
+        {"vocab_size": 4096, "held_out_loss": 2.1, "measured_on": ["books/a.txt"]},
+        {"vocab_size": 4096, "held_out_loss": 1.8, "measured_on": ["notes/b.txt"]},
+    ])
+    assert same is True and comparable is False
 
 
 def test_a_model_never_measured_cannot_be_compared_by_number():

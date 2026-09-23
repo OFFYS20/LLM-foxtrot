@@ -15,9 +15,14 @@ from pathlib import Path
 import gradio as gr
 
 from ai_studio.core import gradio_compat as compat
-from teacher import lessons, workspace
+from teacher import card as cards
+from teacher import exams, lessons, workspace
 from teacher.material import gather
 from teacher.workspace import TeacherError
+
+#: What a lesson teaches: text to continue, or pairs to answer.
+TEXT = "Text — it learns to continue it"
+PAIRS = "Question-and-answer pairs — it learns to reply"
 
 CSS = """
 :root { --t-accent: #a85c32; }
@@ -47,6 +52,19 @@ def hardware_summary() -> str:
     if facts["gpus"] == 1:
         return f"one GPU: {facts['names'][0]}"
     return f"{facts['gpus']} GPUs, gradients averaged between them"
+
+
+def gpu_picker():
+    """How many GPUs to train on — a slider only when there is a choice to make.
+
+    Gradio 6 refuses a slider whose ends are the same number, which is what one
+    GPU (or none) gives; that refusal stopped the whole window opening.
+    """
+    count = hardware()["gpus"]
+    label = f"GPUs to use ({hardware_summary()})"
+    if count > 1:
+        return gr.Slider(1, count, value=1, step=1, label=label)
+    return gr.Number(value=1, precision=0, label=label, interactive=False)
 
 
 def model_names() -> list[str]:
@@ -79,6 +97,78 @@ def collect(paths, pasted: str, folder: str) -> "gather":
     if folder and folder.strip():
         sources.append(folder.strip())
     return gather(sources, raw_text=pasted or "")
+
+
+def paths_from(files, folder: str) -> list[str]:
+    """The files and the folder given, as paths — pairs are read from files, not pasted."""
+    sources = [getattr(item, "name", item) for item in (files or [])]
+    if folder and folder.strip():
+        sources.append(folder.strip())
+    return sources
+
+
+def parse_batch(value) -> int | str:
+    """The batch box: a whole number, or auto."""
+    text = str(value if value is not None else "").strip().lower()
+    if text == "auto":
+        return "auto"
+    try:
+        number = float(text or 8)
+    except ValueError:
+        raise TeacherError(f"Batch size '{value}' is not a number. Use a whole number, "
+                           f"or auto.") from None
+    if number < 1 or number != int(number):
+        raise TeacherError("Batch size is a whole number, 1 or more — or auto.")
+    return int(number)
+
+
+def parse_rate(value):
+    """The rate box: empty for the measured default, a number, or auto."""
+    text = str(value if value is not None else "").strip().lower()
+    if text in ("", "default"):
+        return None
+    if text == "auto":
+        return "auto"
+    try:
+        rate = float(text)
+    except ValueError:
+        raise TeacherError(f"Learning rate '{value}' is not a number. Leave it empty for "
+                           f"the default, or type something like 5e-5, or auto.") from None
+    if not 0 < rate < 1:
+        raise TeacherError(f"{rate:g} is not a learning rate — they sit between about "
+                           f"1e-6 and 1e-2.")
+    return rate
+
+
+def lesson_report(model, lesson: dict) -> str:
+    """What one lesson did, before and after, in words someone can act on."""
+    label, note, _share = lessons.judge(model, lesson["held_out_loss"])
+    before, after = lesson.get("held_out_before"), lesson["held_out_loss"]
+    blocks = [f"### {model.name}: {label}", f"_{note}_"]
+    if after is not None:
+        change = f"**{before:.4f} → {after:.4f}**" if before is not None else f"**{after:.4f}**"
+        blocks.append(f"Held-out loss {change} (perplexity {lesson['perplexity']:.1f}), "
+                      f"measured on {lesson.get('measured_on') or 'held-out text'}.")
+    if before is not None and after is not None and after > before:
+        blocks.append("⚠️ **This lesson made it worse** on text it did not train on. "
+                      "Roll it back on the **Keep** tab, then try fewer epochs or a lower "
+                      "learning rate.")
+    best = lesson.get("best_held_out")
+    if best is not None and after is not None and best < after - 0.01 and not (
+            before is not None and after > before):
+        blocks.append(f"_It was lowest part-way through ({best:.4f}) and rose after — "
+                      f"fewer epochs would have stopped there._")
+    rate = lesson.get("learning_rate")
+    blocks.append(
+        f"{lesson['epochs']:g} epoch(s) · {lesson['steps']} steps · batch "
+        f"{lesson.get('batch_size', '?')} · rate {f'{rate:.0e}' if rate else '?'}"
+        f"{' (' + lesson['rate_from'] + ')' if lesson.get('rate_from') else ''} · "
+        f"{lesson['seconds']:.0f}s on {lesson['device']}")
+    if lesson.get("lora"):
+        detail = lesson["lora"]
+        blocks.append(f"LoRA adapter, rank {detail['rank']}: {fmt(detail['trainable_parameters'])} "
+                      f"of {fmt(detail['total_parameters'])} weights trained, then merged in.")
+    return "\n\n".join(blocks)
 
 
 def describe(name: str) -> str:
@@ -125,11 +215,22 @@ def describe(name: str) -> str:
                       "the original had learned by then.")
         return "\n\n".join(blocks)
 
+    from teacher import interrupted
+
+    waiting = interrupted.waiting(model)
+    if waiting:
+        blocks.append(f"⏸ **An unfinished lesson is waiting** — {interrupted.describe(waiting)}. "
+                      f"Resume it on the **Teach** tab.")
+
     last = taught[-1]
     loss = last.get("held_out_loss") or last.get("final_loss")
     label, note, _share = lessons.judge(model, loss)
     blocks.append(f"<span class='stage'>{label}</span>")
     blocks.append(f"_{note}_")
+    if last.get("held_out_before") is not None and last.get("held_out_loss") is not None:
+        worse = last["held_out_loss"] > last["held_out_before"]
+        blocks.append(f"Last lesson: held-out {last['held_out_before']:.4f} → "
+                      f"{last['held_out_loss']:.4f}" + (" — **it got worse**" if worse else ""))
     blocks.append(
         f"{len(taught)} lesson(s) · {fmt(model.taught_characters())} characters taught · "
         f"held-out loss **{loss:.4f}**" if loss else f"{len(taught)} lesson(s)"
@@ -160,7 +261,8 @@ def refresh_everything(selected: str | None = None):
     names = model_names()
     pick = selected if selected in names else (names[0] if names else None)
     update = gr.update(choices=names, value=pick)
-    return update, update, update, describe(pick or "")
+    # The same list, without a selection, for the compare box.
+    return update, gr.update(choices=names), update, describe(pick or "")
 
 
 # -------------------------------------------------------------------- build
@@ -209,17 +311,41 @@ def do_create(name, mode, size, custom_size, base, custom_base, files, pasted, f
 
 # -------------------------------------------------------------------- teach
 def do_teach(name, files, pasted, folder, epochs, batch, rate, auto, target,
-             max_rounds, gpus=1, progress=gr.Progress()):
+             max_rounds, gpus=1, kind=TEXT, lora=False, lora_rank=16, device="auto",
+             keep=2, against="", progress=gr.Progress()):
     if not _lock.acquire(blocking=False):
         return "### Busy\n\nA lesson is already running. Wait for it to finish.", gr.update()
     try:
         if not name:
             raise TeacherError("Choose a model first.")
         model = workspace.get(name)
-        material = collect(files, pasted, folder)
-        if not material.characters:
-            raise TeacherError("Add some text to teach it from.")
 
+        answers = None
+        if kind == PAIRS:
+            # Pairs are files: .jsonl, .json or .csv, read as questions and answers.
+            answers = paths_from(files, folder)
+            if not answers:
+                raise TeacherError("Add a file of question-and-answer pairs — .jsonl, .json "
+                                   "or .csv — or a folder of them.")
+            material = gather([])
+        else:
+            material = collect(files, pasted, folder)
+            if not material.characters:
+                raise TeacherError("Add some text to teach it from.")
+
+        measured = None
+        if against and str(against).strip():
+            measured = gather([str(against).strip()], dedupe=False)
+            if not measured.characters:
+                raise TeacherError(f"Nothing readable in {against}, so there would be "
+                                   f"nothing to measure against.")
+
+        options = dict(
+            batch_size=parse_batch(batch), learning_rate=parse_rate(rate),
+            gpus=int(gpus or 1), lora=bool(lora), lora_rank=int(lora_rank or 16),
+            device=device or "auto", keep_checkpoints=int(keep if keep is not None else 2),
+            answers=answers, against=measured,
+        )
         rounds: list[str] = []
 
         if auto:
@@ -230,36 +356,264 @@ def do_teach(name, files, pasted, folder, epochs, batch, rate, auto, target,
 
             summary = lessons.teach_until(
                 model, material, target=target, epochs_per_round=float(epochs),
-                max_rounds=int(max_rounds), batch_size=int(batch), learning_rate=float(rate),
-                gpus=int(gpus or 1),
-                on_round=on_round,
+                max_rounds=int(max_rounds), on_round=on_round, **options,
             )
             if not summary["rounds"]:
                 return f"### Nothing to do\n\n{summary['reason'].capitalize()}.", describe(name)
 
             table = "\n".join(["| round | held-out loss | stage |", "|---|---|---|", *rounds])
             label, note, _share = lessons.judge(model, summary["held_out_loss"])
-            body = (f"### {model.name}: {label}\n\n_{note}_\n\n{table}\n\n"
-                    f"**{summary['rounds']} rounds** ({summary['epochs']:g} epochs) in "
+            start = summary.get("held_out_before")
+            change = (f"Held-out loss **{start:.4f} → {summary['held_out_loss']:.4f}**. "
+                      if start is not None and summary["held_out_loss"] is not None else "")
+            body = (f"### {model.name}: {label}\n\n_{note}_\n\n{table}\n\n{change}"
+                    f"**{summary['rounds']} rounds**, {summary.get('rounds_kept', summary['rounds'])} "
+                    f"kept ({summary['epochs']:g} epochs in these weights), "
                     f"{summary['seconds']:.0f}s — stopped because {summary['reason']}.")
         else:
             progress(0.2, desc="Teaching")
-            lesson = lessons.teach(
-                model, material, epochs=float(epochs),
-                batch_size=int(batch), learning_rate=float(rate),
-                gpus=int(gpus or 1),
-            )
-            label, note, _share = lessons.judge(model, lesson["held_out_loss"])
-            body = (f"### {model.name}: {label}\n\n_{note}_\n\n"
-                    f"Held-out loss **{lesson['held_out_loss']:.4f}** "
-                    f"(perplexity {lesson['perplexity']:.1f}) after "
-                    f"{lesson['epochs']:g} epoch(s) in {lesson['seconds']:.0f}s on "
-                    f"{lesson['device']}.")
+            lesson = lessons.teach(model, material, epochs=float(epochs), **options)
+            body = lesson_report(model, lesson)
     except Exception as exc:  # noqa: BLE001
         return friendly(exc), describe(name or "")
     finally:
         _lock.release()
     return body, describe(name)
+
+
+def resume_state(name: str | None):
+    """Show the resume button only when there is something to resume."""
+    from teacher import interrupted
+
+    try:
+        waiting = interrupted.waiting(workspace.get(name)) if name else None
+    except TeacherError:
+        waiting = None
+    if not waiting:
+        return gr.update(value="", visible=False), gr.update(visible=False)
+    return (gr.update(value=f"⏸ **Unfinished lesson** — {interrupted.describe(waiting)}.",
+                      visible=True), gr.update(visible=True))
+
+
+def do_resume(name, progress=gr.Progress()):
+    if not _lock.acquire(blocking=False):
+        return "### Busy\n\nA lesson is already running. Wait for it to finish.", gr.update()
+    try:
+        if not name:
+            raise TeacherError("Choose a model first.")
+        model = workspace.get(name)
+        progress(0.2, desc="Carrying on from the last save")
+        lesson = lessons.resume(model)
+        body = "Resumed from where it was interrupted.\n\n" + lesson_report(model, lesson)
+    except Exception as exc:  # noqa: BLE001
+        return friendly(exc), describe(name or "")
+    finally:
+        _lock.release()
+    return body, describe(name)
+
+
+# --------------------------------------------------------------------- test
+def suite_choices() -> list[tuple[str, str]]:
+    try:
+        return [(f"{row['label']} — {row['category']}", row["suite"]) for row in exams.catalogue()]
+    except Exception:  # noqa: BLE001 - a broken suite list must not stop the window opening
+        return [("MMLU", "mmlu")]
+
+
+def do_test(name, suite, items, shots, offline):
+    """Sit the model down in front of a benchmark, item by item."""
+    if not name:
+        yield "Choose a model first."
+        return
+    done: dict = {}
+    progress: list[str] = []
+
+    def run():
+        try:
+            done["outcome"] = exams.sit(
+                workspace.get(name), suite, limit=int(items or 20),
+                few_shot=int(shots) if shots not in (None, "") else None,
+                allow_download=not offline,
+                on_item=lambda i, total, right: progress.append(
+                    f"{i}/{total} {'right' if right else 'wrong'}"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            done["error"] = exc
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    while worker.is_alive():
+        if progress:
+            yield f"Asking… {progress[-1]}"
+        time.sleep(0.5)
+    worker.join()
+    if "error" in done:
+        yield friendly(done["error"])
+        return
+
+    outcome = done["outcome"]
+    lines = [
+        f"### {outcome['label']}: {outcome['correct']}/{outcome['items']} "
+        f"({outcome['accuracy'] * 100:.0f}%)",
+    ]
+    if outcome["chance"] is not None:
+        lines.append(f"Guessing would score **{outcome['chance'] * 100:.0f}%**.")
+    lines.append(exams.verdict(outcome))
+    if not outcome["official"]:
+        lines.append(f"_{outcome['note']}_")
+    lines.append(f"{outcome['shots']} worked example(s) in the prompt · greedy, so it repeats "
+                 f"exactly · {outcome['seconds']:.0f}s · kept in the model's record")
+    def cell(text: str, width: int) -> str:
+        # A pipe inside a cell would end it early.
+        return " ".join(text.split())[:width].replace("|", "\\|")
+
+    rows = ["| | question | expected | answered |", "|---|---|---|---|"]
+    rows += [f"| {'✓' if r['correct'] else '✗'} | {cell(r['question'], 70)} | "
+             f"{cell(r['expected'], 20)} | {cell(r['answered'], 20)} |"
+             for r in outcome["results"][:10]]
+    lines.append("\n".join(rows))
+    yield "\n\n".join(lines)
+
+
+# ------------------------------------------------------------------ compare
+def do_compare(names, prompt, tokens, temperature):
+    try:
+        chosen = [workspace.get(name) for name in (names or [])]
+        if len(chosen) < 2:
+            raise TeacherError("Pick at least two models to compare.")
+        if not (prompt or "").strip():
+            raise TeacherError("Write a prompt for them all to continue.")
+        result = lessons.compare(chosen, prompt, max_new_tokens=int(tokens),
+                                 temperature=float(temperature))
+    except Exception as exc:  # noqa: BLE001
+        return friendly(exc)
+
+    blocks = [f"Same prompt, same seed ({result['seed']}) — a difference is the models, "
+              f"not the dice."]
+    for entry in result["models"]:
+        loss = entry["held_out_loss"]
+        quoted = "\n".join("> " + line for line in (entry["reply"].strip() or "(nothing)").splitlines())
+        blocks.append(f"**{entry['model']}** · {entry['stage']}"
+                      + (f" · held-out {loss:.4f}" if loss is not None else "")
+                      + "\n\n" + quoted)
+    if result["losses_comparable"]:
+        blocks.append("Their held-out losses were measured on the same text with the same "
+                      "vocabulary, so the lower one is doing better.")
+    else:
+        blocks.append("_Their held-out losses cannot be compared: "
+                      + ("they split text into different vocabularies" if not result["same_vocabulary"]
+                         else "they were measured on different text")
+                      + ". Read the replies instead._")
+    return "\n\n".join(blocks)
+
+
+# --------------------------------------------------------------- the card
+def do_card(name):
+    try:
+        if not name:
+            raise TeacherError("Choose a model first.")
+        model = workspace.get(name)
+        known = cards.facts(model)
+        written = cards.write(model, known=known)
+    except Exception as exc:  # noqa: BLE001
+        return friendly(exc), ""
+    return (f"### Model card written\n\n`{written}`\n\n{len(known['lessons'])} lesson(s) in "
+            f"these weights · {len(known['sources'])} source(s) · {len(known['exams'])} "
+            f"benchmark result(s). No licence is chosen for the model — that is yours "
+            f"to decide.", cards.render(known))
+
+
+# -------------------------------------------------------------------- GGUF
+def do_export(name, precision, destination, converter):
+    from teacher import export
+
+    if not name:
+        yield "Choose a model first."
+        return
+    model_name = name
+    lines: list[str] = []
+    done: dict = {}
+
+    def run():
+        try:
+            model = workspace.get(model_name)
+            target = (Path(destination).expanduser() if (destination or "").strip()
+                      else Path.home() / f"{model.name}-{precision}.gguf")
+            done["written"] = export.to_gguf(
+                model, target, precision=precision, converter=(converter or "").strip() or None,
+                on_log=lambda message, level="info": lines.append(message))
+            done["card"] = cards.beside_export(model, done["written"])
+        except Exception as exc:  # noqa: BLE001
+            done["error"] = exc
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    while worker.is_alive():
+        if lines:
+            yield "Converting…\n\n```\n" + "\n".join(lines[-8:]) + "\n```"
+        time.sleep(0.5)
+    worker.join()
+    if "error" in done:
+        yield friendly(done["error"])
+        return
+
+    written = done["written"]
+    _entry, card_path, why_not = done["card"]
+    advice = "\n".join(export.advice(written))
+    yield (f"### Exported\n\n`{written['path']}` — {written['bytes'] / 1024 ** 2:,.1f} MB\n\n"
+           + (f"Model card beside it: `{card_path}`\n\n" if card_path
+              else f"No model card beside it — {why_not}\n\n")
+           + f"```\n{advice}\n```")
+
+
+# -------------------------------------------------------------------- serve
+#: The API server started from the window, if one is running.
+_serving: dict = {}
+
+
+def do_serve(name, port, key):
+    """Start the OpenAI-style API for one model, on this machine only."""
+    if _serving.get("server"):
+        return (f"Already serving **{_serving['name']}** at "
+                f"`http://127.0.0.1:{_serving['port']}/v1`. Stop it first.")
+    try:
+        if not name:
+            raise TeacherError("Choose a model first.")
+        import uvicorn
+
+        from teacher import serve
+
+        app = serve.build_app([name], api_key=(key or "").strip() or None)
+        server = uvicorn.Server(uvicorn.Config(app, host=serve.DEFAULT_HOST, port=int(port),
+                                               log_level="warning"))
+        thread = threading.Thread(target=server.run, daemon=True)
+        thread.start()
+        for _ in range(100):
+            if server.started or not thread.is_alive():
+                break
+            time.sleep(0.1)
+        if not server.started:
+            server.should_exit = True
+            raise TeacherError(f"Could not listen on port {int(port)} — is something else "
+                               f"using it? Try another port.")
+    except Exception as exc:  # noqa: BLE001
+        return friendly(exc)
+    _serving.update(server=server, thread=thread, name=name, port=int(port))
+    return (f"### Serving {name}\n\n`http://127.0.0.1:{int(port)}/v1`\n\n"
+            f"Point any OpenAI client there, with **{name}** as the model"
+            + (" and your key as the API key." if (key or "").strip() else ".")
+            + " Only this machine can reach it.")
+
+
+def do_stop_serving():
+    server = _serving.pop("server", None)
+    if server is None:
+        return "Nothing is being served."
+    server.should_exit = True
+    _serving.pop("thread").join(timeout=10)
+    name = _serving.pop("name", "")
+    _serving.pop("port", None)
+    return f"Stopped serving {name}."
 
 
 # ----------------------------------------------------------------- the web
@@ -493,6 +847,9 @@ def build() -> gr.Blocks:
                     # --------------------------------------------- teach
                     with gr.Tab("Teach"):
                         gr.Markdown("Give it material, then let it learn. Every round is saved.")
+                        resume_note = gr.Markdown(visible=False)
+                        resume_button = gr.Button("Resume the unfinished lesson", visible=False)
+                        kind = gr.Radio([TEXT, PAIRS], value=TEXT, label="What it learns from")
                         auto = gr.Checkbox(
                             value=True, label="Keep going until it is done (recommended)")
                         with gr.Row():
@@ -501,13 +858,29 @@ def build() -> gr.Blocks:
                             max_rounds = gr.Number(value=20, precision=0, label="Most rounds")
                         with gr.Row():
                             epochs = gr.Number(value=3, label="Epochs (per round)")
-                            batch = gr.Number(value=8, precision=0, label="Batch size")
-                            rate = gr.Number(value=3e-4, label="Learning rate")
-                        gpus = gr.Slider(
-                            1, max(1, hardware()["gpus"]), value=1, step=1,
-                            label=f"GPUs to use ({hardware_summary()})",
-                            interactive=hardware()["gpus"] > 1,
-                        )
+                            batch = gr.Textbox(value="8", label="Batch size",
+                                               info="a number, or auto to fill the hardware")
+                            rate = gr.Textbox(value="", label="Learning rate",
+                                              placeholder="default for this kind of model",
+                                              info="empty for the measured default, a number "
+                                                   "like 5e-5, or auto")
+                        gpus = gpu_picker()
+                        with gr.Accordion("More", open=False):
+                            with gr.Row():
+                                lora = gr.Checkbox(
+                                    value=False, label="LoRA — train a small adapter, not every "
+                                                       "weight (pretrained models only)")
+                                lora_rank = gr.Number(value=16, precision=0, label="LoRA rank")
+                            with gr.Row():
+                                device = gr.Dropdown(["auto", "cpu", "cuda"], value="auto",
+                                                     label="Train on")
+                                keep = gr.Number(value=2, precision=0,
+                                                 label="Saved states to keep")
+                            against = gr.Textbox(
+                                label="Measure against a separate file or folder",
+                                placeholder="leave empty to hold out the end of the material",
+                                info="the tail of the same text flatters a model that "
+                                     "memorised it; separate text does not")
                         teach_button = gr.Button("Teach", variant="primary")
                         teach_out = gr.Markdown()
 
@@ -528,6 +901,32 @@ def build() -> gr.Blocks:
                                 top_p = gr.Slider(0.05, 1, value=0.95, step=0.01, label="Top-p")
                                 top_k = gr.Slider(0, 200, value=40, step=1, label="Top-k")
                         clear_chat = gr.Button("Clear", size="sm")
+                        with gr.Accordion("Compare models", open=False):
+                            gr.Markdown("One prompt through several models at the same seed, "
+                                        "so a difference is the models and not the dice.")
+                            compare_names = gr.Dropdown(names, multiselect=True,
+                                                        label="Models")
+                            compare_prompt = gr.Textbox(label="Prompt", lines=2)
+                            compare_button = gr.Button("Compare")
+                            compare_out = gr.Markdown()
+
+                    # ---------------------------------------------- test
+                    with gr.Tab("Test"):
+                        gr.Markdown(
+                            "Real benchmark questions, graded, with the score **guessing** "
+                            "would get beside it. A small model scoring at chance on a "
+                            "knowledge test is expected — that is not a failed lesson."
+                        )
+                        with gr.Row():
+                            suite = gr.Dropdown(suite_choices(), value="arc", label="Benchmark")
+                            items = gr.Number(value=20, precision=0, label="Questions")
+                            shots = gr.Number(value=None, precision=0,
+                                              label="Worked examples (empty: the suite's own)")
+                        offline = gr.Checkbox(
+                            value=False,
+                            label="Don't download the official questions — use what is here")
+                        test_button = gr.Button("Run it", variant="primary")
+                        test_out = gr.Markdown()
 
                     # ---------------------------------------------- keep
                     with gr.Tab("Keep"):
@@ -539,6 +938,42 @@ def build() -> gr.Blocks:
                         destination = gr.Textbox(
                             label="Copy to", placeholder="leave empty to put it beside the model")
                         pack_button = gr.Button("Copy files")
+
+                        gr.Markdown("### Model card")
+                        gr.Markdown(
+                            "A README for the model, written from its own record: what it "
+                            "started from, what it was taught and from where, how it scores, "
+                            "and the base model's licence."
+                        )
+                        card_button = gr.Button("Write the model card")
+                        with gr.Accordion("The card", open=False):
+                            card_view = gr.Markdown()
+
+                        gr.Markdown("### Export to GGUF")
+                        gr.Markdown(
+                            "One file for llama.cpp, Ollama and LM Studio, with its model "
+                            "card beside it. Needs llama.cpp's converter; pretrained models only."
+                        )
+                        with gr.Row():
+                            precision = gr.Dropdown(["f16", "bf16", "f32", "q8_0"], value="f16",
+                                                    label="Precision")
+                            export_to = gr.Textbox(label="Write to",
+                                                   placeholder="leave empty for your home folder")
+                        converter = gr.Textbox(label="llama.cpp's convert_hf_to_gguf.py, "
+                                                     "if Teacher cannot find it")
+                        export_button = gr.Button("Export")
+
+                        gr.Markdown("### Serve it to other programs")
+                        gr.Markdown(
+                            "An API in OpenAI's format on this machine, so chat front-ends, "
+                            "editors and scripts can use the model."
+                        )
+                        with gr.Row():
+                            serve_port = gr.Number(value=8008, precision=0, label="Port")
+                            serve_key = gr.Textbox(label="Key (optional)", type="password")
+                        with gr.Row():
+                            serve_button = gr.Button("Start serving")
+                            stop_button = gr.Button("Stop", size="sm")
 
                         gr.Markdown("### Saved states")
                         gr.Markdown(
@@ -622,24 +1057,36 @@ def build() -> gr.Blocks:
 
         # The dropdown is built once at launch; without this a model made later
         # would be missing from it after a page reload.
-        app.load(refresh_everything, picker, [picker, picker, picker, card])
+        app.load(refresh_everything, picker, [picker, compare_names, picker, card])
 
         check.click(do_check, [files, pasted, folder], material_out)
         web_button.click(do_web, [web_query, web_count, web_urls], [web_out, folder])
         picker.change(describe, picker, card)
-        refresh.click(refresh_everything, picker, [picker, picker, picker, card])
+        refresh.click(refresh_everything, picker, [picker, compare_names, picker, card])
 
         make_button.click(
             do_create,
             [new_name, mode, size, custom_size, base, custom_base, files, pasted, folder],
-            [make_out, picker, picker, picker, card],
+            [make_out, picker, compare_names, picker, card],
         )
         teach_button.click(
             do_teach,
             [picker, files, pasted, folder, epochs, batch, rate, auto, target, max_rounds,
-             gpus],
+             gpus, kind, lora, lora_rank, device, keep, against],
             [teach_out, card],
-        )
+        ).then(resume_state, picker, [resume_note, resume_button])
+        app.load(resume_state, picker, [resume_note, resume_button])
+        picker.change(resume_state, picker, [resume_note, resume_button])
+        resume_button.click(do_resume, picker, [teach_out, card]).then(
+            resume_state, picker, [resume_note, resume_button])
+
+        test_button.click(do_test, [picker, suite, items, shots, offline], test_out)
+        compare_button.click(do_compare, [compare_names, compare_prompt, tokens, temperature],
+                             compare_out)
+        card_button.click(do_card, picker, [keep_out, card_view])
+        export_button.click(do_export, [picker, precision, export_to, converter], keep_out)
+        serve_button.click(do_serve, [picker, serve_port, serve_key], keep_out)
+        stop_button.click(do_stop_serving, None, keep_out)
 
         send.click(do_chat, [message, chat, picker, tokens, temperature, top_p, top_k],
                    [chat, message])
@@ -660,10 +1107,10 @@ def build() -> gr.Blocks:
         branch_button.click(
             lambda name, new, label: do_branch(name, new, chosen_stamp(label)),
             [picker, branch_name, states],
-            [keep_out, picker, picker, picker, card],
+            [keep_out, picker, compare_names, picker, card],
         ).then(state_choices, picker, states)
         forget_button.click(do_forget, [picker, confirm],
-                            [keep_out, picker, picker, picker, card])
+                            [keep_out, picker, compare_names, picker, card])
 
     return app
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import shutil
 import time
 from pathlib import Path
@@ -106,6 +107,24 @@ BASES = {
     "tiny-test": ("sshleifer/tiny-gpt2", "0.1M — a stub for checking the plumbing, not for use"),
 }
 
+#: The learning rate a lesson starts from when none is given. One number for
+#: every kind of lesson was wrong: a pretrained model taught at the rate that
+#: suits one built from noise gets worse on text it has not seen, and forgets
+#: what it knew. These were measured — the table is in teacher/README.md.
+RATES = {
+    "scratch": 3e-4,
+    "pretrained": 5e-5,
+    "lora": 3e-4,
+}
+
+
+def default_rate(model: Model, *, lora: bool = False) -> float:
+    """The measured starting rate for this kind of lesson."""
+    if lora:
+        return RATES["lora"]
+    return RATES["scratch"] if model.kind() == "studio" else RATES["pretrained"]
+
+
 SPECIALS = ["<unk>", "<s>", "</s>", "<pad>"]
 MIN_CHARACTERS = 2_000
 
@@ -192,6 +211,8 @@ def create(model: Model, material: Material, size: str, *, context: int = 0) -> 
     network.save_pretrained(str(model.path))
 
     built = config.parameter_count()["total"]
+    model.start_record(made="from scratch", asked_for=target, parameters=built,
+                       origin_weights=model.weights_stamp())
     return {
         "size": format_parameter_count(target),
         "asked_for": target,
@@ -247,7 +268,10 @@ def adopt(model: Model, base: str, *, trust_remote_code: bool = False) -> dict:
     parameters = sum(p.numel() for p in network.parameters())
     context = int(getattr(network.config, "max_position_embeddings", 0)
                   or getattr(network.config, "n_positions", 0) or 1024)
-    model.note(base_repo=repo, adopted_at=time.time())
+    model.start_record(
+        made="adopted", base_repo=repo, adopted_at=time.time(), parameters=parameters,
+        base_license=licence_of(repo), origin_weights=model.weights_stamp(),
+    )
     return {
         "base": repo,
         "parameters": parameters,
@@ -255,6 +279,38 @@ def adopt(model: Model, base: str, *, trust_remote_code: bool = False) -> dict:
         "context": context,
         "model_type": getattr(network.config, "model_type", "unknown"),
     }
+
+
+def licence_of(repo: str) -> str | None:
+    """The licence a Hub model's authors declare, or None when it cannot be found.
+
+    Read from the model's own card, never assumed: a model with no stated
+    licence is not thereby free to use, and Teacher's own licence says nothing
+    about anyone's weights.
+    """
+    try:
+        from huggingface_hub import model_info
+
+        data = model_info(repo, timeout=10).card_data
+    except Exception:  # noqa: BLE001 - offline, private or renamed: all mean "unknown"
+        data = None
+    if not data:
+        try:
+            from huggingface_hub import hf_hub_download
+
+            card = Path(hf_hub_download(repo, "README.md", local_files_only=True))
+            head = card.read_text(encoding="utf-8").split("---")[1]
+        except Exception:  # noqa: BLE001
+            return None
+        found = re.search(r"^license:\s*(\S+)", head, re.M)
+        return found.group(1).strip("'\"") if found else None
+
+    licence = data.get("license")
+    if licence == "other" and data.get("license_name"):
+        licence = f"other ({data.get('license_name')})"
+    if isinstance(licence, list):
+        licence = ", ".join(str(item) for item in licence)
+    return str(licence) if licence else None
 
 
 def load_network(model: Model):
@@ -282,7 +338,7 @@ def teach(
     *,
     epochs: float = 3.0,
     batch_size: int | str = 8,
-    learning_rate: float = 3e-4,
+    learning_rate: float | str | None = None,
     keep_checkpoints: int = 2,
     lora: bool = False,
     lora_rank: int = 16,
@@ -299,12 +355,37 @@ def teach(
     Ordinarily that is over ``material`` — plain text, which teaches the model
     to continue. With ``answers`` it is over question-and-answer pairs instead,
     which teaches it to reply.
+
+    ``learning_rate`` left out takes the measured default for this kind of
+    lesson (see ``RATES``); "auto" measures one on this model and material.
     """
+    measuring_rate = str(learning_rate).strip().lower() == "auto"
+    if learning_rate is None or measuring_rate:
+        rate, rate_from = default_rate(model, lora=lora), "the default for this kind of lesson"
+    else:
+        rate, rate_from = float(learning_rate), "given"
+    if not 0 < rate < 1:
+        raise TeacherError(f"A learning rate of {rate:g} makes no sense; they sit between "
+                           f"about 1e-6 and 1e-2.")
+
     if not answers and material.characters < MIN_CHARACTERS:
         raise TeacherError(
             f"Only {material.characters:,} characters — too little for a lesson. "
             f"Give it at least {MIN_CHARACTERS:,}."
         )
+
+    from teacher import generation, interrupted
+
+    # A model kept loaded for chatting would sit in memory beside the one
+    # being trained, for nothing.
+    generation.forget()
+
+    # The weights this lesson starts from. A resumed lesson started before the
+    # interruption, from whatever was there then, and the record says so.
+    weights_before = model.weights_stamp()
+    earlier_run = (interrupted.waiting(model) or {}) if resume_from else {}
+    if resume_from:
+        weights_before = earlier_run.get("weights_before", weights_before)
 
     tokenizer = load_tokenizer(model)
     network = load_network(model)
@@ -386,7 +467,7 @@ def teach(
             method="lora" if lora else "continued_pretraining",
             epochs=float(epochs),
             batch_size=int(size),
-            learning_rate=float(learning_rate),
+            learning_rate=rate,
             max_sequence_length=block,
             # "auto" takes what the card can do. Holding a modern GPU at FP32
             # halves its throughput and doubles its activation memory for
@@ -443,6 +524,32 @@ def teach(
             + ("\n\nTry:\n  " + "\n  ".join(check.suggestions) if check.suggestions else "")
         )
 
+    rate_test = None
+    if measuring_rate:
+        from ai_studio.training.rate_finder import range_test
+
+        if on_log:
+            on_log("[PREP] measuring a learning rate: a few dozen steps at rates rising "
+                   "from far too low to far too high")
+        found = range_test(network, train_set, batch_size=settings.batch_size,
+                           device=chosen_device, seed=settings.seed)
+        rate_test = found.to_dict()
+        if found.suggestion is None:
+            if on_log:
+                on_log(f"[WARN] the range test could not read a rate — {found.reason}; "
+                       f"using the default, {rate:g}")
+        else:
+            rate, rate_from = found.suggestion, f"measured — {found.reason}"
+            settings = configure(settings.batch_size)
+            if on_log:
+                on_log(f"[PREP] {found.reason}; teaching at {rate:.1e}")
+        # The test trained these weights at rates far too high on purpose.
+        # The lesson starts again from the weights on disk.
+        network = load_network(model)
+        if lora:
+            lora_stats = _attach_lora(model, network, settings, lora_rank)
+            network = lora_stats.pop("network")
+
     started = time.time()
 
     if world_size > 1 and style:
@@ -465,13 +572,13 @@ def teach(
         if result.status == "failed":
             raise TeacherError(f"The lesson failed: {result.error}")
         lora_stats = result.lora or lora_stats
+        before, after = result.held_out_before, result.held_out_after
     else:
-        from teacher import interrupted
-
         plan = {
+            "weights_before": weights_before,
             "epochs": float(epochs),
             "batch_size": settings.batch_size,
-            "learning_rate": float(learning_rate),
+            "learning_rate": rate,
             "block": block,
             "style": style,
             "sources": list(answers) if answers else list(material.sources),
@@ -506,10 +613,19 @@ def teach(
             on_log=on_log,
             on_checkpoint=keep_progress,
             start_step=int(resume_from or 0),
+            # A resumed lesson takes back the optimizer's state as it was saved.
+            restore_state=(lambda optimizer, _schedule: interrupted.restore(model, None, optimizer))
+            if resume_from else None,
         )
         held["trainer"] = trainer
         held["total"] = int(len(train_set) * epochs / max(1, settings.batch_size))
+        # Measured on the held-out text before a single step, and again on the
+        # weights that are saved. The best score seen part-way through is not
+        # the model on disk; these two are the lesson's before and after.
+        before = earlier_run.get("held_out_before") if resume_from else trainer.evaluate()
+        plan["held_out_before"] = before
         result = trainer.train()
+        after = trainer.evaluate() if result.status in ("completed", "stopped") else None
         interrupted.clear(model)
         if result.status == "failed":
             raise TeacherError(f"The lesson failed: {result.error}")
@@ -541,6 +657,7 @@ def teach(
         "style": style or "text",
         "measured_on": measured_on,
         "sources": list(answers) if answers else material.sources,
+        "measured_against": list(against.sources) if measured_on == "a separate file" else None,
         "characters": material.characters,
         "pairs": len(train_set) if style else None,
         "tokens": len(train_ids) if not style else sum(
@@ -548,18 +665,34 @@ def teach(
         "epochs": float(epochs),
         "steps": result.steps,
         "final_loss": result.final_train_loss,
-        "held_out_loss": result.best_val_loss,
-        "perplexity": perplexity(result.best_val_loss or result.final_train_loss),
+        "held_out_before": before,
+        "held_out_loss": after if after is not None else result.best_val_loss,
+        # The lowest it went on the way. Lower than the end means the lesson
+        # went on past its best: fewer epochs or a lower rate would have kept it.
+        "best_held_out": result.best_val_loss,
+        "perplexity": perplexity((after if after is not None else result.best_val_loss)
+                                 or result.final_train_loss),
         "seconds": round(result.duration_seconds, 1),
         "device": f"{check.device} x{world_size}" if world_size > 1 else check.device,
         "gpus": world_size,
+        "learning_rate": rate,
+        "rate_from": rate_from,
+        "rate_test": rate_test,
+        "batch_size": settings.batch_size,
         "status": result.status,
+        # Which weights it began from and which it saved: the links a model
+        # card follows to tell the lessons in these weights from undone ones.
+        "weights_before": weights_before,
+        "weights": model.weights_stamp(),
     }
+    if resume_from:
+        lesson["resumed_from_step"] = int(resume_from)
     if lora_stats:
         lesson["lora"] = {key: value for key, value in lora_stats.items() if key != "network"}
     if model.kind() != "studio" and model.history().get("base_loss") is None:
-        # The first measurement is this model's own starting point.
-        first = lesson["held_out_loss"] or lesson["final_loss"]
+        # Where the adopted model stood before it was taught anything: the
+        # point every later stage is measured from.
+        first = before if before is not None else (lesson["held_out_loss"] or lesson["final_loss"])
         if first is not None:
             model.note(base_loss=float(first))
 
@@ -576,6 +709,8 @@ class _Outcome:
         self.steps = payload.get("steps", 0)
         self.final_train_loss = payload.get("final_train_loss")
         self.best_val_loss = payload.get("best_val_loss")
+        self.held_out_before = payload.get("held_out_before")
+        self.held_out_after = payload.get("held_out_after")
         self.duration_seconds = payload.get("duration_seconds", 0.0)
         self.error = payload.get("error")
         self.lora = payload.get("lora") or None
@@ -689,6 +824,60 @@ def _snapshot_previous(model: Model, keep: int) -> None:
         shutil.rmtree(stale, ignore_errors=True)
 
 
+# ------------------------------------------------------------------ resume
+def resume(model: Model, *, on_log=None) -> dict:
+    """Carry on a lesson that was interrupted, from the step it last wrote down.
+
+    Refuses rather than guesses: a lesson whose material cannot be rebuilt, or
+    has changed since, would carry on training on something other than what
+    it was part-way through.
+    """
+    from teacher import interrupted
+    from teacher.material import gather
+
+    plan = interrupted.waiting(model)
+    if not plan:
+        raise TeacherError(f"{model.name} has no interrupted lesson — nothing to resume.")
+
+    sources = list(plan.get("sources") or [])
+    if not sources:
+        raise TeacherError(
+            "The interrupted lesson did not record where its material came from, "
+            "so it cannot be rebuilt. Teach it again from the start."
+        )
+    if plan.get("style"):
+        raise TeacherError(
+            "Answer lessons are not resumable yet — they are short enough that "
+            f"starting again costs little: teacher teach {model.name} "
+            f"--answers {' --answers '.join(sources)}"
+        )
+
+    material = gather(sources, dedupe=True)
+    if interrupted.fingerprint(material.text) != plan.get("fingerprint"):
+        raise TeacherError(
+            "The material has changed since that lesson started, so resuming would "
+            "train on a different text than the one it was part-way through.\n"
+            f"  Start it again:  teacher teach {model.name} "
+            f"--from {' --from '.join(sources)}"
+        )
+
+    # The weights as they were at the last save, not as they were before the run.
+    restored = model.rollback_to_interrupted()
+    if on_log:
+        on_log(f"[PREP] restored the weights saved at step {restored}, with the "
+               f"optimizer's state and the place in the schedule and the data")
+    return teach(
+        model, material,
+        epochs=float(plan.get("epochs", 3.0)),
+        batch_size=int(plan.get("batch_size", 8)),
+        learning_rate=float(plan["learning_rate"]) if plan.get("learning_rate") else None,
+        lora=bool(plan.get("lora")),
+        lora_rank=int(plan.get("lora_rank", 16)),
+        resume_from=int(plan.get("step", 0)),
+        on_log=on_log,
+    )
+
+
 # ------------------------------------------------------------- teach until
 #: How far to go. "best" means keep going until it stops improving.
 TARGETS = {
@@ -727,6 +916,11 @@ def teach_until(
     history: list[float] = []
     rounds: list[dict] = []
     reason = "reached the limit of rounds"
+    weights_before = model.weights_stamp()
+    kept = 0
+    #: The weights each round saved, in order. A rollback to the state between
+    #: two rounds lands on one of these, and the record can say which.
+    round_weights: list[str | None] = []
 
     # A model already past the target needs no lesson at all.
     previous = model.history().get("lessons", [])
@@ -752,6 +946,7 @@ def teach_until(
             **lesson_options,
         )
         rounds.append(lesson)
+        round_weights.append(lesson.get("weights"))
         loss = lesson["held_out_loss"] or lesson["final_loss"]
         label, _note, share = judge(model, loss)
 
@@ -759,8 +954,26 @@ def teach_until(
             on_round(index, lesson, label, share)
 
         if loss is None:
+            kept = index
             reason = "there is no held-out text to measure against"
             break
+
+        # Worse than where this round began: its weights are not the best the
+        # run reached, so they are not the ones it leaves behind.
+        best_so_far = history[-1] if history else lesson.get("held_out_before")
+        if lesson["held_out_loss"] is not None and best_so_far is not None \
+                and lesson["held_out_loss"] > best_so_far:
+            change = f"{best_so_far:.4f} to {lesson['held_out_loss']:.4f}"
+            try:
+                model.rollback()
+                reason = (f"round {index} made it worse ({change}), so the weights from "
+                          f"before that round were kept")
+            except TeacherError:
+                kept = index
+                reason = (f"round {index} made it worse ({change}), and no earlier state "
+                          f"was saved to go back to")
+            break
+        kept = index
 
         if ceiling and share < ceiling:
             reason = f"it reached '{label}'"
@@ -777,25 +990,36 @@ def teach_until(
             reason = f"it ran for {max_minutes:g} minute(s)"
             break
 
-    final = rounds[-1] if rounds else {}
+    # The round whose weights were kept, not merely the last one to run.
+    final = rounds[kept - 1] if kept else {}
+    first = rounds[0] if rounds else {}
     summary = {
         "at": started,
+        "style": first.get("style", "text"),
+        "measured_on": first.get("measured_on"),
         "sources": material.sources,
         "characters": material.characters,
-        "tokens": final.get("tokens", 0),
-        "epochs": epochs_per_round * len(rounds),
+        "tokens": first.get("tokens", 0),
+        "epochs": epochs_per_round * kept,
         "rounds": len(rounds),
-        "steps": sum(r.get("steps", 0) for r in rounds),
+        "rounds_kept": kept,
+        "steps": sum(r.get("steps", 0) for r in rounds[:kept]),
         "final_loss": final.get("final_loss"),
-        "held_out_loss": final.get("held_out_loss"),
-        "first_loss": rounds[0].get("held_out_loss") if rounds else None,
+        "held_out_before": first.get("held_out_before"),
+        "held_out_loss": final.get("held_out_loss") if kept else first.get("held_out_before"),
+        "first_loss": first.get("held_out_loss"),
         "perplexity": final.get("perplexity"),
         "seconds": round(time.time() - started, 1),
-        "device": final.get("device", "cpu"),
-        "status": final.get("status", "completed"),
+        "device": first.get("device", "cpu"),
+        "learning_rate": first.get("learning_rate"),
+        "batch_size": first.get("batch_size"),
+        "status": first.get("status", "completed"),
         "target": target,
         "reason": reason,
         "lessons": [r.get("held_out_loss") for r in rounds],
+        "weights_before": weights_before,
+        "weights": model.weights_stamp(),
+        "round_weights": round_weights[:kept],
     }
     model.record(summary)
     return summary
@@ -806,56 +1030,22 @@ def talk(model: Model, prompt: str, *, max_new_tokens: int = 120, temperature: f
          top_p: float = 0.95, top_k: int = 40, repetition_penalty: float = 1.1,
          seed: int | None = None) -> tuple[str, dict]:
     """Generate a continuation, mirroring what the Bench page does in the browser."""
-    tokenizer = load_tokenizer(model)
-    network = load_network(model).eval()
-
     from teacher import answers as pairs
+    from teacher import generation
 
+    loaded = generation.load(model)
     # A model taught with "### Question:" and then asked something bare answers
     # as if continuing a document, which looks like the training failed.
-    prompt = pairs.opener(model, prompt)
-
-    ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
-    bos = tokenizer.bos_token_id
-    if bos is not None:
-        ids = [bos] + ids
-
-    if seed is not None:
-        torch.manual_seed(seed)
-
-    started = time.time()
-    with torch.no_grad():
-        if model.kind() == "studio":
-            output = network.generate(
-                torch.tensor([ids]),
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                repetition_penalty=repetition_penalty,
-                eos_token_id=tokenizer.eos_token_id,
-            )
-        else:
-            output = network.generate(
-                torch.tensor([ids]),
-                attention_mask=torch.ones(1, len(ids), dtype=torch.long),
-                max_new_tokens=max_new_tokens,
-                do_sample=temperature > 0,
-                temperature=max(temperature, 1e-5),
-                top_p=top_p,
-                top_k=top_k or None,
-                repetition_penalty=repetition_penalty,
-                pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
-                eos_token_id=tokenizer.eos_token_id,
-            )
-    produced = output[0][len(ids):].tolist()
-    elapsed = max(time.time() - started, 1e-6)
-    text = tokenizer.decode(produced, skip_special_tokens=True)
-    return text, {
-        "prompt_tokens": len(ids),
-        "generated": len(produced),
-        "tokens_per_second": len(produced) / elapsed,
-        "seconds": elapsed,
+    ids = generation.encode(loaded, pairs.opener(model, prompt))
+    result = generation.generate(loaded, ids, generation.Sampling(
+        max_new_tokens=max_new_tokens, temperature=temperature, top_p=top_p,
+        top_k=top_k, repetition_penalty=repetition_penalty, seed=seed,
+    ))
+    return result["text"], {
+        "prompt_tokens": result["prompt_tokens"],
+        "generated": result["completion_tokens"],
+        "tokens_per_second": result["tokens_per_second"],
+        "seconds": result["seconds"],
     }
 
 
@@ -881,6 +1071,7 @@ def compare(models: list[Model], prompt: str, **sampling) -> dict:
         text, stats = talk(model, prompt, **sampling)
         entries.append({
             "model": model.name,
+            "measured_on": last.get("measured_against") or last.get("sources"),
             "kind": model.kind(),
             "base": model.base_repo(),
             "branched_from": model.history().get("branched_from"),
@@ -914,7 +1105,12 @@ def comparability(entries: list[dict]) -> tuple[bool, bool]:
     """
     same_vocabulary = len({entry.get("vocab_size") for entry in entries}) == 1
     measured = all(entry.get("held_out_loss") is not None for entry in entries)
-    return same_vocabulary, same_vocabulary and measured
+    # A loss on one text says nothing about a loss on another. Models whose
+    # last lessons were measured against different material are not on the
+    # same scale either, whatever their vocabularies.
+    texts = {tuple(entry.get("measured_on") or ()) for entry in entries}
+    same_text = len(texts) == 1 and texts != {()}
+    return same_vocabulary, same_vocabulary and measured and same_text
 
 
 # ------------------------------------------------------------------ verdict

@@ -8,9 +8,14 @@ So a run in progress writes itself down periodically — the weights, the
 optimizer's momentum, the schedule's position and which step it reached — and
 ``teacher resume`` picks it up from there.
 
-What resuming does **not** restore is the data loader's position within the
-epoch, so a resumed run may see a few batches it has already seen. That is a
-smaller cost than the hours, and it is said out loud rather than glossed over.
+Resuming puts all of it back: the weights, the optimizer's state, the place in
+the learning-rate schedule, and the place in the data — the shuffle has its
+own seeded generator, so the order of every epoch can be drawn again and the
+batches already trained on passed over. For a model without dropout, a lesson
+interrupted and resumed ends on the same weights as one that ran straight
+through; a test holds it to that. What is not put back is the shared random
+state that dropout draws on, so a model that uses dropout ends close to, not
+exactly on, the same weights.
 
 The record is deleted when a lesson finishes. A record that is there means a
 lesson that is not.

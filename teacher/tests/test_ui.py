@@ -155,3 +155,73 @@ def test_styling_goes_where_this_version_wants_it():
         assert "css" in deferred, "Gradio 6 takes css at launch()"
     else:
         assert deferred == {}, "Gradio 5 takes css on the constructor"
+
+
+def test_one_gpu_or_none_is_not_offered_as_a_slider(monkeypatch):
+    """Gradio 6 refuses a slider from 1 to 1, and that stopped the window opening."""
+    import gradio as gr
+
+    monkeypatch.setattr(ui, "hardware", lambda: {"gpus": 1, "names": ["one card"]})
+    with gr.Blocks():
+        assert not isinstance(ui.gpu_picker(), gr.Slider)
+    monkeypatch.setattr(ui, "hardware", lambda: {"gpus": 2, "names": ["a", "b"]})
+    with gr.Blocks():
+        assert isinstance(ui.gpu_picker(), gr.Slider)
+
+
+# ------------------------------------------- what the terminal can, the window can
+@pytest.mark.parametrize("typed,expected", [("auto", "auto"), ("16", 16), (8, 8), ("", 8)])
+def test_the_batch_box_takes_a_number_or_auto(typed, expected):
+    assert ui.parse_batch(typed) == expected
+
+
+@pytest.mark.parametrize("typed,expected", [("", None), ("default", None), ("auto", "auto"),
+                                            ("5e-5", 5e-5)])
+def test_the_rate_box_takes_nothing_a_number_or_auto(typed, expected):
+    assert ui.parse_rate(typed) == expected
+
+
+@pytest.mark.parametrize("typed", ["fast", "2", "-1e-4"])
+def test_a_rate_that_is_not_one_is_refused_in_words(typed):
+    with pytest.raises(TeacherError):
+        ui.parse_rate(typed)
+
+
+def test_comparing_needs_two_models():
+    assert "at least two" in ui.do_compare(["carded"], "hello", 8, 0.8)
+
+
+def test_the_resume_button_hides_when_there_is_nothing_to_resume():
+    note, button = ui.resume_state("carded")
+    assert note["visible"] is False and button["visible"] is False
+
+
+def test_the_model_card_is_written_from_the_window():
+    status, text = ui.do_card("carded")
+    assert "Model card written" in status
+    assert "# carded" in text and "No licence has been chosen" in text
+
+
+def test_serving_starts_and_stops_from_the_window():
+    import json
+    import socket
+    import urllib.request
+
+    from teacher.material import gather
+
+    model = workspace.get("served-ui", must_exist=False)
+    lessons.create(model, gather([], raw_text="the lamp lit the sea . " * 400), "tiny",
+                   context=64)
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    started = ui.do_serve(model.name, port, "")
+    try:
+        assert "Serving" in started, started
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/models", timeout=10) as reply:
+            assert json.load(reply)["data"][0]["id"] == model.name
+        assert "Already serving" in ui.do_serve(model.name, port, "")
+    finally:
+        assert "Stopped" in ui.do_stop_serving()
+    assert ui.do_stop_serving() == "Nothing is being served."
